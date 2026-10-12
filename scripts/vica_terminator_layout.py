@@ -119,6 +119,10 @@ class Term:
         self.uses_map = uses_map
 
 
+# 음성(⑫·⑬) 중복 검사 — launch 와 .venv 파이썬 노드(-m src.ros_*)를 명령줄로 찾는다(2026-10-12).
+VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && echo "[중복] 음성(⑫ 또는 ⑬)이 이미 켜져 있습니다 — 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요." || '
+
+
 def build_terms() -> dict[str, Term]:
     """터미널 정의를 만든다.
 
@@ -456,13 +460,38 @@ def build_terms() -> dict[str, Term]:
                 "LLM 해석 / TTS 재생 / 긴급어 상시 감시 세 프로세스.",
                 "시작 로그에 '목적지 catalog가 없어' WARN이 뜨면 map_id가 틀린 것이다.",
                 "그 상태에서도 노드는 정상으로 보이지만 모든 목적지가 gate에서 막힌다.",
+                "⑬(믿음 오프라인)과 동시에 켜지 않는다 — 명령이 먼저 음성이 떠 있는지 본다.",
             ),
-            command="ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID",
+            # 중복 검사는 명령줄로 한다(2026-10-12). 음성 노드는 .venv 파이썬이라 프로세스 이름(comm)이
+            # 'python' 이어서 아래 guard(pgrep -x 이름)는 한 번도 걸리지 않았다. ⑬ 과 마이크·스피커·
+            # Ollama 를 같이 쓰므로 둘이 동시에 뜨면 안 된다.
+            command=VOICE_DUP_CHECK + "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID",
             mode=HOLD,
             workdir=VOICE,
             uses_map=True,
                     guard=("vica_llm_node", "vica_tts_node",),
 ),
+        # ⑬ 자리(2026-10-12 사용자 요청): 쓰지 않는 push-to-talk STT 대신, 인터넷이 불안할 때 ⑫ 대신 켜는
+        # 오프라인 음성. LLM 을 로봇 안 믿음(midm2-mini, Ollama)으로만 돌린다 — Realtime·GPT 를 시도하지
+        # 않아 말마다 약 3 s 로 일정하다(10-12 측정: 먹통 인터넷 자동 전환은 첫 마디 약 24 s).
+        "llm_local": Term(
+            title="⑬ llm 믿음(오프라인)",
+            note=(
+                "인터넷이 불안할 때 ⑫ 대신 켜는 음성 — LLM 을 로봇 안 믿음(midm2-mini)으로만 돌린다.",
+                "⑫ 와 동시에 켜지 않는다 — 먼저 ⑫ 를 Ctrl+C 로 끈다(같은 마이크·스피커·모델 서버를 쓴다).",
+                "말마다 약 3초로 일정, 대신 판단은 믿음 품질(10-12 비교: 화장실 짐작·숫자 오인 —",
+                "짧고 정확한 문장으로: '남자 화장실 가자', '5분').",
+                "온라인으로 돌아가려면 이 칸을 끄고 ⑫ 를 다시 켠다.",
+            ),
+            command=VOICE_DUP_CHECK + (
+                "VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama OLLAMA_HOST=http://localhost:11434"
+                " VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY= VICA_LLM_FALLBACK_MODEL="
+                " ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID"),
+            mode=HOLD,
+            workdir=VOICE,
+            uses_map=True,
+        ),
+        # 옛 ⑬. 레이아웃에서는 뺐지만(2026-10-12) 정의는 남긴다 — segnet·nvblox 와 같다.
         "stt": Term(
             title="⑬ stt",
             note=(
@@ -755,7 +784,7 @@ PROFILES: dict[str, Profile] = {
             ["motor", "d455", "imu", "segnet", "nav2", "nvblox"],
             ["mission", "app", "gui", "monitor", "handle", "detector"],
             ["web", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
-            ["llm", "stt", "check", "teleop", "shell"],
+            ["llm", "llm_local", "check", "teleop", "shell"],
         ],
     ),
     "drive": Profile(
@@ -783,7 +812,7 @@ PROFILES: dict[str, Profile] = {
             ["motor", "d455", "imu", "nav2"],
             ["mission", "app", "gui", "monitor", "handle", "detector"],
             ["web", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
-            ["llm", "stt", "check", "teleop", "shell"],
+            ["llm", "llm_local", "check", "teleop", "shell"],
         ],
     ),
     "app": Profile(
