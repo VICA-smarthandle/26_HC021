@@ -59,6 +59,13 @@ DEFAULT_ROS_WS = WORKSPACE / "vica_ros2_ws"
 # "로봇 스택은 vica_ros2_ws/install, 감시 노드는 별도 worktree"를 실측 구성으로 기록했다.
 MONITOR_OVERLAYS = ("$HOME/wt-dev", "$HOME/wt-monitor")
 
+# C++ 판 덧씌움(2026-10-15 사용자 요청 "C++로 수정한 코드들을 터미네이터에서 기본적으로 실행").
+# 모터·손잡이·방향지시 C++ 판은 run92~95 실기를 마쳤지만 dev 머지·본 빌드 전이라 worktree 설치본에만 있다.
+# 칸을 열 때 그 설치본을 본 빌드 위에 덧씌운다 — 사용자가 run92~95 에서 손으로 하던 source 와 같다.
+# 본 빌드에 C++ 패키지가 생기면(머지 뒤 빌드) 덧씌우지 않는다. 옛 worktree 빌드가 새 본 빌드를 가리지 않게.
+CPP_MOTOR = ("$HOME/wt-motor-cpp", "mdrobot_can_control_cpp")        # feat/motor-node-cpp
+CPP_GUIDANCE = ("$HOME/wt-guidance-cpp", "vica_user_guidance_cpp")   # feat/user-guidance-cpp
+
 # `maps/CURRENT_MAP`이 없을 때만 쓰는 fallback. 평소 지도는 실행 시점에
 # CURRENT_MAP이 정하므로 이 값은 거의 쓰이지 않는다. 생성 시점에 이름을 굳혀
 # 명령에 박아 넣던 방식이 칸마다 지도가 갈리던 원인이라 그렇게 바꿨다.
@@ -98,6 +105,7 @@ class Term:
         monitor_overlay: bool = False,
         guard: tuple[str, ...] = (),
         uses_map: bool = False,
+        cpp_overlay: tuple[str, str] = (),
     ) -> None:
         self.title = title
         self.note = note
@@ -117,6 +125,8 @@ class Term:
         # 명령이 $VICA_MAP_ID / $VICA_MAP_YAML 을 쓰는 칸. 어느 지도인지 화면에
         # 찍고 지도·목적지 파일이 실제로 있는지 확인한다.
         self.uses_map = uses_map
+        # (worktree 경로, C++ 패키지) — 그 설치본을 덧씌워 C++ 판으로 띄운다. CPP_MOTOR 위 설명.
+        self.cpp_overlay = cpp_overlay
 
 
 # 음성(⑫·⑬) 중복 검사 — launch 와 .venv 파이썬 노드(-m src.ros_*)를 명령줄로 찾는다(2026-10-12).
@@ -214,10 +224,13 @@ def build_terms() -> dict[str, Term]:
                 "[바퀴가 돕니다] 바퀴를 띄웠는지, 물리 E-stop이 손에 닿는지 먼저 확인한다.",
                 "선행 조건은 ① can1 UP 과 ④ safety 기동이다.",
                 "이 칸은 can1을 건드리지 않는다. 링크 작업은 ① 칸에서만 한다.",
+                "C++ 판(~/wt-motor-cpp, run92·93 실기)을 덧씌워 띄운다. 파이썬 판으로:",
+                "  명령 끝에 motor_impl:=python, 또는 칸을 열기 전에 export VICA_CPP_OVERLAY=0",
             ),
             command="ros2 launch mdrobot_can_control motor_bringup.launch.py",
             mode=HOLD,
                     guard=("mdrobot_can_ke", "keyboard_knob",),
+            cpp_overlay=CPP_MOTOR,
 ),
         "d455": Term(
             title="⑥ d455",
@@ -637,10 +650,13 @@ def build_terms() -> dict[str, Term]:
                 "스마트핸들. /odom을 보고 회전 예고를 /vica/turn_guide로 낸다.",
                 "핸들 하드웨어가 연결돼 있어야 driver 쪽이 의미가 있다.",
                 "바퀴를 돌리지 않으므로 순서 제약은 없지만 /odom이 먼저 나와야 한다.",
+                "손잡이 드라이버·방향지시 C++ 판(~/wt-guidance-cpp, run94·95 실기)을 덧씌워 띄운다.",
+                "  파이썬 판으로: driver_impl:=python turn_impl:=python, 또는 export VICA_CPP_OVERLAY=0",
             ),
             command="ros2 launch vica_user_guidance user_guidance.launch.py",
             mode=HOLD,
                     guard=("turn_guide_node", "user_guidance_d",),
+            cpp_overlay=CPP_GUIDANCE,
 ),
         "detector": Term(
             title="⑮ detector",
@@ -1020,6 +1036,21 @@ vica_guard() {
 }
 """
 
+# C++ 판 덧씌움(CPP_MOTOR 위 설명). 끄기: 칸을 열기 전에 export VICA_CPP_OVERLAY=0.
+CPP_OVERLAY_BLOCK = """
+if [ "${{VICA_CPP_OVERLAY:-1}}" = "0" ]; then
+  printf '\\033[0;33m[C++ 판 끔]\\033[0m VICA_CPP_OVERLAY=0 — 본 빌드(파이썬 판)로 뜬다.\\n'
+elif vica_have_pkg {pkg}; then
+  printf '\\033[0;36m[C++ 판]\\033[0m 본 빌드에 {pkg} 가 있다 — 덧씌우지 않는다.\\n'
+elif [ -f "{ws}/install/local_setup.bash" ] && [ -d "{ws}/install/{pkg}" ]; then
+  source "{ws}/install/local_setup.bash"
+  printf '\\033[0;36m[C++ 판]\\033[0m {pkg} <- %s · %s\\n' "{ws}" \\
+    "$(git -C "{ws}" log -1 --format='%h %ad' --date=format:'%m-%d %H:%M' 2>/dev/null)"
+else
+  printf '\\033[0;31m[경고]\\033[0m C++ 판 설치본이 없다: %s/install/{pkg} — 본 빌드(파이썬 판)로 뜬다.\\n' "{ws}"
+fi
+"""
+
 # 감시 패키지는 운영 빌드에 없을 수 있다. 없을 때만 overlay를 덧씌운다.
 # 두 워크스페이스는 DDS로 통신하므로 나머지 노드와 섞여도 문제가 없다.
 OVERLAY_BLOCK = """
@@ -1120,6 +1151,10 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         overlay_block = OVERLAY_BLOCK.format(candidates=candidates)
     else:
         overlay_block = ""
+
+    if term.cpp_overlay:
+        ws, pkg = term.cpp_overlay
+        overlay_block += CPP_OVERLAY_BLOCK.format(ws=ws, pkg=pkg)
 
     if term.workdir:
         # 경로가 사라졌을 때 조용히 홈에서 실행되는 사고를 막는다.
