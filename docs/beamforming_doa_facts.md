@@ -137,6 +137,7 @@ yaw_rad = wrap_to_pi(radians(doa_deg * wake_doa_sign))   # sign = +1.0
 ```
 
 - 발행: 음성 `vica_wakeword_node` — **호출 1회당 1회**. DOA 를 못 읽으면 **발행하지 않는다**
+- **2026-10-06 기본 끔(팀 요청)**: 음성 `.env` 의 `VICA_WAKE_DOA_TURN` 이 `on` 이 아니면 발행하지 않는다 — 마이크 잡음이 강한 곳에서 방향이 틀려 엉뚱한 쪽으로 돌았다. 꺼져 있으면 "비카야"는 회전 없이 "네?" 뒤 청취만 하고, 손잡이 쪽 곧장 질문도 없다. 방향 로그·barge-in 방향 관문은 그대로
 - 구독: ROS2 `vica_mission_manager` — **대기 상태에서만** 받는다
 
 `/vica/wake` 의 payload 를 넓히지 않고 별도 토픽을 낸 이유: 그 토픽에는 이미 안내 중
