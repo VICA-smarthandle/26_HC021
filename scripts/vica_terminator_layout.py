@@ -556,6 +556,7 @@ def build_terms() -> dict[str, Term]:
         ),
         # 2026-10-06 사용자 요청: vica·vica_drive 에서 initpose 칸 자리를 이 칸이 받는다.
         # initpose 정의는 위에 그대로 남겨 두었다(다시 넣을 때 columns 에 이름만 적으면 된다).
+        # 2026-10-19 사용자 요청: vica_map 에도 넣었다(app 칸 뒤).
         "web": Term(
             title="web 앱(5000)",
             note=(
@@ -895,7 +896,9 @@ PROFILES: dict[str, Profile] = {
             ["motor", "d455", "imu", "reset", "slam", "teleop"],
             # supervisor·app 은 앱 지도 모드용이다(2026-08-28 복원). 순서는
             # supervisor → app — 앱이 매핑 서비스를 부르려면 주인이 먼저 있어야 한다.
-            ["supervisor", "app", "rviz", "save", "check", "shell"],
+            # web 은 2026-10-19 사용자 요청 — 폰 앱 없이 브라우저로도 앱을 열 수 있게.
+            # app(rosbridge) 뒤에 둔다. 웹 앱이 거기에 붙는다.
+            ["supervisor", "app", "web", "rviz", "save", "check", "shell"],
         ],
     ),
 }
