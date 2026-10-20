@@ -23,7 +23,7 @@
 | 채널 | 6ch — ch0 처리음(AEC·잡음억제·빔포밍 완료) / ch1~4 원음 / ch5 재생참조 |
 | DOA 읽기 | `DspState.doa_angle()` — USB vendor control transfer, 파라미터 id21 `DOAANGLE`, **0~359 정수** |
 | 권한 | `/etc/udev/rules.d/99-respeaker.rules`(`MODE=0666`) 적용됨. 읽기 확인 완료 |
-| 쓰기 | **금지(D7 동결).** DOA 는 읽기 전용이라 저촉되지 않는다 |
+| 쓰기 | 칩 DSP 설정은 쓸 수 있다 — 고정 규칙 D7 은 2026-10-06 사용자 결정으로 폐지. 바꾸면 호출·긴급어 인식률을 다시 잰다(vica-voice-llm `src/dsp_state.py` 주석). DOA 는 읽기 전용 값이다 |
 
 ## 3. 빔 방향은 고정할 수 없다
 
@@ -137,6 +137,7 @@ yaw_rad = wrap_to_pi(radians(doa_deg * wake_doa_sign))   # sign = +1.0
 ```
 
 - 발행: 음성 `vica_wakeword_node` — **호출 1회당 1회**. DOA 를 못 읽으면 **발행하지 않는다**
+- **2026-10-06 기본 끔(팀 요청)**: 음성 `.env` 의 `VICA_WAKE_DOA_TURN` 이 `on` 이 아니면 발행하지 않는다 — 마이크 잡음이 강한 곳에서 방향이 틀려 엉뚱한 쪽으로 돌았다. 꺼져 있으면 "비카야"는 회전 없이 "네?" 뒤 청취만 하고, 손잡이 쪽 곧장 질문도 없다. 방향 로그·barge-in 방향 관문은 그대로
 - 구독: ROS2 `vica_mission_manager` — **대기 상태에서만** 받는다
 
 `/vica/wake` 의 payload 를 넓히지 않고 별도 토픽을 낸 이유: 그 토픽에는 이미 안내 중

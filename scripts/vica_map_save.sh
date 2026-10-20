@@ -1,6 +1,12 @@
 #!/bin/bash
 
 NAME=${1:-}
+ALIGN=""
+case "${2:-}" in
+  --align) ALIGN="--align" ;;
+  "") ;;
+  *) printf "\n\033[31m[중단]\033[0m 둘째 인자는 --align 만 씁니다: '%s'\n" "$2"; exit 1 ;;
+esac
 
 ok()   { printf "  \033[32mOK\033[0m   %s\n" "$1"; }
 bad()  { printf "  \033[31mNG\033[0m   %s\n" "$1"; }
@@ -14,9 +20,10 @@ MAPS="$VICA_ROS_WS/maps"
 
 if [ -z "$NAME" ]; then
   cat <<'USAGE'
-사용법: vica_map_save.sh <지도이름>
+사용법: vica_map_save.sh <지도이름> [--align]
 
   vica_map_save.sh vica_map_0813
+  vica_map_save.sh vica_map_0813 --align    기울었으면(2° 이상) 바르게 세워 저장
 
 지도 이름에는 영문·숫자·밑줄·붙임표만 씁니다. 확장자와 경로는 붙이지 않습니다.
 세 파일(.pgm .png .yaml)이 그 이름으로 maps/ 에 생깁니다.
@@ -45,7 +52,9 @@ echo
 
 echo "--- 1) 덮어쓰기 확인 ---"
 exists=""
-for f in "$PGM" "$PNG" "$YAML"; do
+for f in "$PGM" "$PNG" "$YAML" \
+         "$MAPS/$NAME"_keepout.pgm "$MAPS/$NAME"_keepout.yaml \
+         "$MAPS/$NAME"_keepout.json; do
   [ -e "$f" ] && exists="$exists  $f"$'\n'
 done
 if [ -n "$exists" ]; then
@@ -106,7 +115,18 @@ fi
 ok "pgm·yaml 저장 완료"
 echo
 
-echo "--- 4) 앱용 png 변환 ---"
+echo "--- 4) 지도 기울기 ---"
+python3 -m vica_cartographer.map_align save "$MAPS" "$NAME" $ALIGN \
+  --min-deg "${VICA_MAP_ALIGN_MIN_DEG:-2.0}"
+if [ $? -ne 0 ]; then
+  warn "기울기 계산을 실행하지 못했다(vica_cartographer 를 빌드했는지 확인). 지도는 그대로 저장됐다."
+  if [ -n "$ALIGN" ]; then
+    echo 'VICA_ALIGN {"result": "failed", "tilt_deg": null, "rotated_deg": 0.0, "message": "지도를 돌리지 못해 그대로 저장했습니다."}'
+  fi
+fi
+echo
+
+echo "--- 5) 앱용 png 변환 ---"
 if ! command -v convert >/dev/null 2>&1; then
   bad "convert(ImageMagick) 가 없습니다"
   die "pgm 과 yaml 은 남았습니다. png 만 따로 만드세요:
@@ -121,7 +141,7 @@ fi
 ok "png 생성 완료 — 앱이 읽는 것은 이 파일이다"
 echo
 
-echo "--- 5) 검증 ---"
+echo "--- 6) 검증 ---"
 for f in "$PGM" "$PNG" "$YAML"; do
   if [ -f "$f" ]; then
     ok "$(basename "$f")  $(stat -c%s "$f") bytes"
@@ -145,7 +165,7 @@ PY
 grep -E '^(resolution|origin):' "$YAML" 2>/dev/null | sed 's/^/       /'
 echo
 
-echo "--- 6) 현재 지도 갱신 ---"
+echo "--- 7) 현재 지도 갱신 ---"
 if printf '%s\n' "$NAME" > "$MAPS/CURRENT_MAP" 2>/dev/null; then
   ok "maps/CURRENT_MAP -> $NAME"
 else
@@ -158,6 +178,7 @@ cat <<EOF
 
 앱이 보게 될 경로:  /maps/$NAME.png
 확인:               cat $MAPS/CURRENT_MAP
+다른 지도로 띄우기: python3 scripts/vica_map_pick.py   (번호로 고름, 한글 이름도 됨)
 되돌리기:           export VICA_MAP_ID=<옛 이름>   (터미널을 띄우기 전에)
 
 앱 목록에 안 보이면 앱에서 지도 목록 동기화를 한 번 하세요.

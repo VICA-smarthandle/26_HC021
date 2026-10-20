@@ -230,6 +230,8 @@ uint8 transition        # RAISED=0, ESCALATED=1, REMINDER=2, CLEARED=3
 | `/vica/tts_request` | `std_msgs/String` | STT, LLM, Mission Manager | TTS | 우선순위 큐 연결, 실제 음성 출력 `[미검증]` |
 | `/vica/tts_state` | `std_msgs/Bool` | TTS | 긴급어 감시 | 재생 중 자가 E-stop 오탐 억제 |
 | `/vica/listen_request` | `std_msgs/Bool` | LLM node, Mission Manager | 웨이크워드 노드 | 질문("~할까요?") 후 재청취 예약 — 웨이크워드 재호출 없이 답변 수신, 실기 `[미검증]` |
+| `/vica/wake` | `std_msgs/String` | 웨이크워드 노드 | Mission Manager, LLM node, 계측 | "비카야" 호출 `wake:N`(N = 호출 번호) / 창 안 구제 `rescue`. 2026-10-07부터 미션이 호출 반응표로 "네?"와 대답 여부를 정한다, 실기 `[미검증]` |
+| `/vica/wake_reply` | `std_msgs/String` | Mission Manager | 웨이크워드 노드 | 호출 판정 `listen:N`·`ignore:N` — 호출 창에서 들은 말을 LLM으로 넘길지 버릴지. 6초 안에 판정이 없으면 버린다(미션 멈춤 = 대답 없음). 2026-10-07, 실기 `[미검증]` |
 | `/voice_emergency_stop` | `std_msgs/Bool` | emergency bridge | emergency_stop_node | 연결 가능 |
 | `/app_emergency_stop` | `std_msgs/Bool` | app_emergency_node | emergency_stop_node | 연결 가능 |
 | `/emergency_stop` | `std_msgs/Bool` | vica_safety/emergency_stop_node | Safety, Mission, app_emergency_node | 중앙 래치 코드·launch 구현, 실기 `[미검증]` |
@@ -244,6 +246,7 @@ uint8 transition        # RAISED=0, ESCALATED=1, REMINDER=2, CLEARED=3
 | `/odom` | `nav_msgs/Odometry` | `robot_localization` EKF | Cartographer, Nav2, 앱 상태 | 표준 출력 계약 및 launch 연결 완료, 실기 검증 필요 |
 | `/navigate_to_pose` | Nav2 action | Mission Manager | Nav2 | 운영 Goal 단일 권한 |
 | `/vica/mission/request_destination` | `RequestDestination` | Flutter, CLI | Mission Manager | UUID·지도·Mission gate를 거치는 공개 요청 |
+| `/vica/mission/request_delivery` | `RequestDestination` | Flutter(물류 배송) | Mission Manager | 공개 요청과 같되 `private` 목적지 허용. 접근 가능·지도 경계·Nav2·E-stop 검사는 동일. 음성 경로 접근 불가(서비스 클라이언트 없음) |
 | `/vica/mission/reload_destinations` | `Trigger` | destination manager | Mission Manager | YAML 변경 후 catalog 교체 |
 | `/vica/mission/cancel_destination` | `MissionCommand` | Flutter | Mission Manager | 진행 중 안내 취소, 실기 `[미검증]` |
 | `/vica/mission/pause_navigation` | `MissionCommand` | Flutter | Mission Manager | 목적지 보관 후 일시정지, 실기 `[미검증]` |
@@ -342,8 +345,10 @@ TTS는 STT·LLM·Mission Manager가 발행하는 `/vica/tts_request`를 우선�
 한 번도 들리지 않았다. **스피커로 나가는 소리는 TTS node 하나만 낸다** — 새 알림음이
 필요하면 별도 node 가 아니라 TTS node 에 재생을 부탁하는 길로 만든다.
 
-음성 저장소 내부 토픽(팀 계약 아님): `/vica/wake`(호출 앵커, 계측용),
-`/vica/sim/event`·`/vica/sim/reset`(`[SIM ONLY]`).
+음성 저장소 내부 토픽(팀 계약 아님): `/vica/sim/event`·`/vica/sim/reset`(`[SIM ONLY]`).
+`/vica/wake`는 2026-10-07부터 내부 토픽이 아니다 — 미션이 호출 반응표로 대답 여부를 정해
+`/vica/wake_reply`로 돌려주는 계약이다(4.2 표). 음성과 미션을 같은 날 올려야 하고, 음성만 새
+판이면 `VICA_WAKE_BY_MISSION=off`로 예전처럼 웨이크워드 노드가 직접 "네?"를 한다.
 
 ## 6. Mission Manager 아키텍처
 

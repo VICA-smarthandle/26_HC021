@@ -18,6 +18,9 @@ DEFAULT_ROS_WS = WORKSPACE / "vica_ros2_ws"
 
 MONITOR_OVERLAYS = ("$HOME/wt-dev", "$HOME/wt-monitor")
 
+CPP_MOTOR = ("$HOME/wt-motor-cpp", "mdrobot_can_control_cpp")
+CPP_GUIDANCE = ("$HOME/wt-guidance-cpp", "vica_user_guidance_cpp")
+
 DEFAULT_MAP_ID = "vica_map_0630"
 
 RC_DIR = HOME / ".config" / "vica-terminator"
@@ -52,6 +55,7 @@ class Term:
         monitor_overlay: bool = False,
         guard: tuple[str, ...] = (),
         uses_map: bool = False,
+        cpp_overlay: tuple[str, str] = (),
     ) -> None:
         self.title = title
         self.note = note
@@ -63,6 +67,10 @@ class Term:
         self.monitor_overlay = monitor_overlay
         self.guard = guard
         self.uses_map = uses_map
+        self.cpp_overlay = cpp_overlay
+
+
+VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && echo "[중복] 음성(⑫ 또는 ⑬)이 이미 켜져 있습니다 — 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요." || '
 
 
 def build_terms() -> dict[str, Term]:
@@ -144,10 +152,13 @@ def build_terms() -> dict[str, Term]:
                 "[바퀴가 돕니다] 바퀴를 띄웠는지, 물리 E-stop이 손에 닿는지 먼저 확인한다.",
                 "선행 조건은 ① can1 UP 과 ④ safety 기동이다.",
                 "이 칸은 can1을 건드리지 않는다. 링크 작업은 ① 칸에서만 한다.",
+                "C++ 판(~/wt-motor-cpp, run92·93 실기)을 덧씌워 띄운다. 파이썬 판으로:",
+                "  명령 끝에 motor_impl:=python, 또는 칸을 열기 전에 export VICA_CPP_OVERLAY=0",
             ),
             command="ros2 launch mdrobot_can_control motor_bringup.launch.py",
             mode=HOLD,
                     guard=("mdrobot_can_ke", "keyboard_knob",),
+            cpp_overlay=CPP_MOTOR,
 ),
         "d455": Term(
             title="⑥ d455",
@@ -252,9 +263,14 @@ def build_terms() -> dict[str, Term]:
                 "지도는 위에 찍힌 '현재 지도'다. 바꾸려면 터미네이터를 다 닫고",
                 "VICA_MAP_ID 를 export 한 뒤 새로 띄운다. 이 칸에서만 고치면 mission·",
                 "app·initpose 는 옛 지도를 계속 보고, Nav2 는 아무 불평 없이 돈다.",
+                "",
+                "use_route:=true — 레일(Route Server)로 달린다(2026-10-01 기본). 레일 파일",
+                "<지도>_route.geojson 이 없는 지도는 launch 가 알아서 레일 없이 띄운다.",
+                "레일 없이 비교 주행할 때만 지우고 실행한다.",
             ),
             command=(
-                "ros2 launch vica_nav2 nav2_map_test.launch.py map:=$VICA_MAP_YAML"
+                "ros2 launch vica_nav2 nav2_map_test.launch.py"
+                " map:=$VICA_MAP_YAML use_route:=true"
             ),
             mode=HOLD,
             uses_map=True,
@@ -376,13 +392,31 @@ def build_terms() -> dict[str, Term]:
                 "LLM 해석 / TTS 재생 / 긴급어 상시 감시 세 프로세스.",
                 "시작 로그에 '목적지 catalog가 없어' WARN이 뜨면 map_id가 틀린 것이다.",
                 "그 상태에서도 노드는 정상으로 보이지만 모든 목적지가 gate에서 막힌다.",
+                "⑬(믿음 오프라인)과 동시에 켜지 않는다 — 명령이 먼저 음성이 떠 있는지 본다.",
             ),
-            command="ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID",
+            command=VOICE_DUP_CHECK + "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID",
             mode=HOLD,
             workdir=VOICE,
             uses_map=True,
                     guard=("vica_llm_node", "vica_tts_node",),
 ),
+        "llm_local": Term(
+            title="⑬ llm 믿음(오프라인)",
+            note=(
+                "인터넷이 불안할 때 ⑫ 대신 켜는 음성 — LLM 을 로봇 안 믿음(midm2-mini)으로만 돌린다.",
+                "⑫ 와 동시에 켜지 않는다 — 먼저 ⑫ 를 Ctrl+C 로 끈다(같은 마이크·스피커·모델 서버를 쓴다).",
+                "말마다 약 3초로 일정, 대신 판단은 믿음 품질(10-12 비교: 화장실 짐작·숫자 오인 —",
+                "짧고 정확한 문장으로: '남자 화장실 가자', '5분').",
+                "온라인으로 돌아가려면 이 칸을 끄고 ⑫ 를 다시 켠다.",
+            ),
+            command=VOICE_DUP_CHECK + (
+                "VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama OLLAMA_HOST=http://localhost:11434"
+                " VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY= VICA_LLM_FALLBACK_MODEL="
+                " ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID"),
+            mode=HOLD,
+            workdir=VOICE,
+            uses_map=True,
+        ),
         "stt": Term(
             title="⑬ stt",
             note=(
@@ -403,7 +437,7 @@ def build_terms() -> dict[str, Term]:
                 "  vica_goto.sh cancel   진행 중 주행 취소",
                 "목적지 이름이 한글인데 xfreerdp(RDP)에서 한영 전환이 안 되어",
                 "번호로 고르게 만들었다. 서비스가 받는 것은 UUID라 이름은 표시용이다.",
-                "초기 위치를 먼저 잡아야 승인된다 — 왼쪽 initpose 칸을 본다.",
+                "초기 위치를 먼저 잡아야 승인된다 — 앱의 '초기 위치 잡기'나 RViz 로 넣는다.",
                 "목적지 목록은 현재 지도의 catalog 에서 읽고, 요청에도 그 map_id 를",
                 "실어 보낸다. Mission Manager 쪽 map_id 와 다르면 거부된다.",
             ),
@@ -428,6 +462,27 @@ def build_terms() -> dict[str, Term]:
             command="bash $VICA_ROOT/scripts/vica_set_initial_pose.sh",
             mode=HOLD,
             uses_map=True,
+        ),
+        "web": Term(
+            title="web 앱(5000)",
+            note=(
+                "관리자 앱의 웹 빌드(VICA_Supervisor/build/web)를 5000번 포트로 연다.",
+                "같은 망의 브라우저에서 http://<젯슨 IP>:5000 으로 접속한다.",
+                "웹 앱은 rosbridge 9090 으로 로봇에 붙으므로 app 칸이 먼저 떠 있어야 한다.",
+                "파일을 내보내기만 하는 서버라 ROS 를 source 하지 않는다. Ctrl+C 로 끈다.",
+                "초기 위치는 이제 앱의 '초기 위치 잡기'나 RViz 2D Pose Estimate 로 넣는다",
+                "(initpose 칸은 2026-10-06 이 칸으로 바뀌었다 — 명령은",
+                " bash $VICA_ROOT/scripts/vica_set_initial_pose.sh 로 shell 칸에서도 된다).",
+            ),
+            command=f"cd {SUPERVISOR}/build/web && python3 -m http.server 5000",
+            mode=HOLD,
+            ros=False,
+            precheck=(
+                f"ls -l {SUPERVISOR}/build/web/index.html 2>&1 | head -1;"
+                " ss -ltn 2>/dev/null | grep -q ':5000 '"
+                " && echo '[주의] 5000번 포트가 이미 열려 있다 — 다른 칸에서 띄웠는지 본다.'"
+                " || echo '5000번 포트 비어 있음'"
+            ),
         ),
         "posecheck": Term(
             title="초기위치 확인",
@@ -498,10 +553,13 @@ def build_terms() -> dict[str, Term]:
                 "스마트핸들. /odom을 보고 회전 예고를 /vica/turn_guide로 낸다.",
                 "핸들 하드웨어가 연결돼 있어야 driver 쪽이 의미가 있다.",
                 "바퀴를 돌리지 않으므로 순서 제약은 없지만 /odom이 먼저 나와야 한다.",
+                "손잡이 드라이버·방향지시 C++ 판(~/wt-guidance-cpp, run94·95 실기)을 덧씌워 띄운다.",
+                "  파이썬 판으로: driver_impl:=python turn_impl:=python, 또는 export VICA_CPP_OVERLAY=0",
             ),
             command="ros2 launch vica_user_guidance user_guidance.launch.py",
             mode=HOLD,
                     guard=("turn_guide_node", "user_guidance_d",),
+            cpp_overlay=CPP_GUIDANCE,
 ),
         "detector": Term(
             title="⑮ detector",
@@ -542,7 +600,7 @@ def build_terms() -> dict[str, Term]:
             note=(
                 "[무거움] 원격(xrdp)에서 CPU 코어 2개를 쓴다. 주행 중에는 끄는 것이 낫다.",
                 "켜둔 채 주행하면 Nav2 계산이 밀려 '로봇이 느린 것'과 구분되지 않는다.",
-                "초기 위치는 왼쪽 initpose 칸으로 넣을 수 있어 RViz 없이도 주행한다.",
+                "초기 위치는 앱의 '초기 위치 잡기'로도 넣을 수 있어 RViz 없이도 주행한다.",
                 "Fixed Frame이 map이어야 2D Pose Estimate가 AMCL에 닿는다.",
                 "지도 확인이 끝나면 Ctrl+C로 바로 끈다.",
             ),
@@ -642,8 +700,8 @@ PROFILES: dict[str, Profile] = {
             ["power", "can", "display", "lidar", "safety"],
             ["motor", "d455", "imu", "segnet", "nav2", "nvblox"],
             ["mission", "app", "gui", "monitor", "handle", "detector"],
-            ["initpose", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
-            ["llm", "stt", "check", "teleop", "shell"],
+            ["web", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
+            ["llm", "llm_local", "check", "teleop", "shell"],
         ],
     ),
     "drive": Profile(
@@ -664,8 +722,8 @@ PROFILES: dict[str, Profile] = {
             ["power", "can", "display", "lidar", "safety"],
             ["motor", "d455", "imu", "nav2"],
             ["mission", "app", "gui", "monitor", "handle", "detector"],
-            ["initpose", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
-            ["llm", "stt", "check", "teleop", "shell"],
+            ["web", "posecheck", "goto", "record", "reset", "rviz", "yolo"],
+            ["llm", "llm_local", "check", "teleop", "shell"],
         ],
     ),
     "app": Profile(
@@ -763,19 +821,37 @@ export VICA_ROOT="${{VICA_ROOT:-$(dirname "$VICA_ROS_WS")}}"
 # CURRENT_MAP 은 "가장 새 지도"가 아니라 "마지막으로 끝까지 성공한 저장"이다.
 # vica_map_save.sh 가 마지막 단계까지 통과했을 때만 쓴다 — png 변환이나 검증에서
 # 멈추면 옛 이름이 그대로 남는다. 반쪽짜리 지도가 현재 지도가 되지 않게 하려는
-# 것이라 의도한 동작이다.
-if [ -n "$VICA_MAP_ID" ]; then
-  VICA_MAP_SRC="환경변수"
-else
-  # 손으로 고쳤을 때를 대비해 첫 줄만 읽고 공백을 턴다.
-  VICA_MAP_ID=$(head -1 "$VICA_ROS_WS/maps/CURRENT_MAP" 2>/dev/null | tr -d '[:space:]')
-  VICA_MAP_SRC="maps/CURRENT_MAP"
-fi
-if [ -z "$VICA_MAP_ID" ]; then
-  VICA_MAP_ID={map_id}
-  VICA_MAP_SRC="fallback — CURRENT_MAP 이 없다"
-fi
-export VICA_MAP_ID VICA_MAP_SRC
+# 것이라 의도한 동작이다. 2026-09-04 부터는 사람이 scripts/vica_map_pick.py 로 고른
+# 지도도 여기에 적힌다 — "로봇이 쓸 지도" 한 곳. 앱의 '(현재)' 표시도 같은 파일이다.
+#
+# 한글 표시 이름(2026-09-04). 파일·yaml·URL 은 계속 영문 id 를 쓰고, 사람이 적는
+# 자리(VICA_MAP_ID)에는 한글 이름이 와도 되게 한 곳에서 id 로 바꾼다. 그 한 곳이
+# scripts/vica_map_resolve.py 다 — goto·initpose 스크립트도 같은 것을 쓴다.
+# 출력은 "id<TAB>출처<TAB>표시이름" 이고, 실패하면 옛 방식(아래)으로 내려간다.
+VICA_MAP_NAME=""
+_vica_out=$(python3 "$VICA_ROOT/scripts/vica_map_resolve.py" \
+  --fallback {map_id} -- "$VICA_MAP_ID" 2>&1)
+case "$_vica_out" in
+  *$'\\t'*)
+    IFS=$'\\t' read -r VICA_MAP_ID VICA_MAP_SRC VICA_MAP_NAME <<< "$_vica_out"
+    ;;
+  *)
+    [ -n "$_vica_out" ] && printf '\\033[0;31m%s\\033[0m\\n' "$_vica_out"
+    if [ -n "$VICA_MAP_ID" ]; then
+      VICA_MAP_SRC="환경변수"
+    else
+      # 손으로 고쳤을 때를 대비해 첫 줄만 읽고 공백을 턴다.
+      VICA_MAP_ID=$(head -1 "$VICA_ROS_WS/maps/CURRENT_MAP" 2>/dev/null | tr -d '[:space:]')
+      VICA_MAP_SRC="maps/CURRENT_MAP"
+    fi
+    if [ -z "$VICA_MAP_ID" ]; then
+      VICA_MAP_ID={map_id}
+      VICA_MAP_SRC="fallback — CURRENT_MAP 이 없다"
+    fi
+    ;;
+esac
+unset _vica_out
+export VICA_MAP_ID VICA_MAP_SRC VICA_MAP_NAME
 export VICA_MAP_YAML="$VICA_ROS_WS/maps/$VICA_MAP_ID.yaml"
 export VICA_DEST_YAML="$HOME/vica_data/destinations/$VICA_MAP_ID/destinations.yaml"
 
@@ -844,6 +920,20 @@ vica_guard() {
 }
 """
 
+CPP_OVERLAY_BLOCK = """
+if [ "${{VICA_CPP_OVERLAY:-1}}" = "0" ]; then
+  printf '\\033[0;33m[C++ 판 끔]\\033[0m VICA_CPP_OVERLAY=0 — 본 빌드(파이썬 판)로 뜬다.\\n'
+elif vica_have_pkg {pkg}; then
+  printf '\\033[0;36m[C++ 판]\\033[0m 본 빌드에 {pkg} 가 있다 — 덧씌우지 않는다.\\n'
+elif [ -f "{ws}/install/local_setup.bash" ] && [ -d "{ws}/install/{pkg}" ]; then
+  source "{ws}/install/local_setup.bash"
+  printf '\\033[0;36m[C++ 판]\\033[0m {pkg} <- %s · %s\\n' "{ws}" \\
+    "$(git -C "{ws}" log -1 --format='%h %ad' --date=format:'%m-%d %H:%M' 2>/dev/null)"
+else
+  printf '\\033[0;31m[경고]\\033[0m C++ 판 설치본이 없다: %s/install/{pkg} — 본 빌드(파이썬 판)로 뜬다.\\n' "{ws}"
+fi
+"""
+
 OVERLAY_BLOCK = """
 if ! vica_have_pkg vica_system_monitor; then
   for _ws in "${{VICA_MONITOR_WS:-}}" {candidates}; do
@@ -875,8 +965,13 @@ printf '\\n'
 """
 
 MAP_BLOCK = """\
-printf '\\033[0;36m현재 지도\\033[0m %s  \\033[0;37m(%s)\\033[0m\\n' \\
-  "$VICA_MAP_ID" "$VICA_MAP_SRC"
+if [ -n "$VICA_MAP_NAME" ] && [ "$VICA_MAP_NAME" != "$VICA_MAP_ID" ]; then
+  printf '\\033[0;36m현재 지도\\033[0m %s \\033[0;37m(%s · %s)\\033[0m\\n' \\
+    "$VICA_MAP_NAME" "$VICA_MAP_ID" "$VICA_MAP_SRC"
+else
+  printf '\\033[0;36m현재 지도\\033[0m %s  \\033[0;37m(%s)\\033[0m\\n' \\
+    "$VICA_MAP_ID" "$VICA_MAP_SRC"
+fi
 if [ ! -f "$VICA_MAP_YAML" ]; then
   printf '\\033[0;31m[경고]\\033[0m 지도 파일이 없다: %s\\n' "$VICA_MAP_YAML"
   printf '        maps/ 를 확인하고 VICA_MAP_ID 를 다시 정한다.\\n'
@@ -929,6 +1024,10 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         overlay_block = OVERLAY_BLOCK.format(candidates=candidates)
     else:
         overlay_block = ""
+
+    if term.cpp_overlay:
+        ws, pkg = term.cpp_overlay
+        overlay_block += CPP_OVERLAY_BLOCK.format(ws=ws, pkg=pkg)
 
     if term.workdir:
         cd_block = (
@@ -1138,7 +1237,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="maps/CURRENT_MAP 이 없을 때만 쓰는 fallback 지도 id."
         f" 기본 {DEFAULT_MAP_ID}. 평소 지도는 실행 시점에 CURRENT_MAP 이 정하므로"
         " 이 값을 바꿔도 대개 아무 영향이 없다. 지도를 바꾸려면 터미네이터를 띄우기"
-        " 전에 VICA_MAP_ID 를 export 한다.",
+        " 전에 scripts/vica_map_pick.py 로 고르거나 VICA_MAP_ID 를 export 한다"
+        " (한글 표시 이름도 된다, 2026-09-04).",
     )
     parser.add_argument(
         "--ros-ws",

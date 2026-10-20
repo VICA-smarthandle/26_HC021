@@ -8,6 +8,9 @@ export ROS_DOMAIN_ID=7
 export ROS_LOCALHOST_ONLY=0
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
+_resolved=$(python3 "$(dirname "${BASH_SOURCE[0]}")/vica_map_resolve.py" -- "${VICA_MAP_ID:-}" 2>/dev/null | cut -f1)
+[ -n "$_resolved" ] && VICA_MAP_ID=$_resolved
+unset _resolved
 if [ -z "$VICA_MAP_ID" ]; then
   VICA_MAP_ID=$(head -1 "$VICA_ROS_WS/maps/CURRENT_MAP" 2>/dev/null | tr -d '[:space:]')
 fi
