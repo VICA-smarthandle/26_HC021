@@ -66,6 +66,15 @@ MONITOR_OVERLAYS = ("$HOME/wt-dev", "$HOME/wt-monitor")
 CPP_MOTOR = ("$HOME/wt-motor-cpp", "mdrobot_can_control_cpp")        # feat/motor-node-cpp
 CPP_GUIDANCE = ("$HOME/wt-guidance-cpp", "vica_user_guidance_cpp")   # feat/user-guidance-cpp
 
+# 수리판 덧씌움(2026-10-20 사용자 요청 "nav2 실행시키는 터미네이터 명령어 수정"). C++ 판과 달리
+# 본 빌드에도 같은 패키지(수리 전)가 있으므로, 본 빌드 파일에 수리 표식이 없을 때만 덧씌운다 —
+# 머지 뒤 본 빌드하면 저절로 꺼진다. (worktree, 패키지, 본 빌드 안 파일, 수리 표식)
+# 엔코더 시각 수리: 속도를 C5 프레임 수신 시각 간격으로(f425116, run100 실기 — EKF 직진 거리 +10 % 제거).
+FIX_ENCODER = (
+    "$HOME/wt-encoder-stamp", "encoder_feedback",
+    "lib/python3.10/site-packages/encoder_feedback/encoder_feedback.py", "def pick_dt",
+)                                                                     # fix/encoder-frame-stamp
+
 # `maps/CURRENT_MAP`이 없을 때만 쓰는 fallback. 평소 지도는 실행 시점에
 # CURRENT_MAP이 정하므로 이 값은 거의 쓰이지 않는다. 생성 시점에 이름을 굳혀
 # 명령에 박아 넣던 방식이 칸마다 지도가 갈리던 원인이라 그렇게 바꿨다.
@@ -106,6 +115,7 @@ class Term:
         guard: tuple[str, ...] = (),
         uses_map: bool = False,
         cpp_overlay: tuple[str, str] = (),
+        fix_overlay: tuple[str, str, str, str] = (),
     ) -> None:
         self.title = title
         self.note = note
@@ -127,6 +137,8 @@ class Term:
         self.uses_map = uses_map
         # (worktree 경로, C++ 패키지) — 그 설치본을 덧씌워 C++ 판으로 띄운다. CPP_MOTOR 위 설명.
         self.cpp_overlay = cpp_overlay
+        # (worktree, 패키지, 본 빌드 안 파일, 수리 표식) — 본 빌드에 표식이 없을 때만 덧씌운다. FIX_ENCODER 위 설명.
+        self.fix_overlay = fix_overlay
 
 
 # 음성(⑫·⑬) 중복 검사 — launch 와 .venv 파이썬 노드(-m src.ros_*)를 명령줄로 찾는다(2026-10-12).
@@ -341,6 +353,9 @@ def build_terms() -> dict[str, Term]:
                 "use_route:=true — 레일(Route Server)로 달린다(2026-10-01 기본). 레일 파일",
                 "<지도>_route.geojson 이 없는 지도는 launch 가 알아서 레일 없이 띄운다.",
                 "레일 없이 비교 주행할 때만 지우고 실행한다.",
+                "",
+                "encoder 는 시각 수리판(~/wt-encoder-stamp, run100 실기)을 덧씌워 띄운다.",
+                "  수리 전 판으로: 칸을 열기 전에 export VICA_FIX_OVERLAY=0",
             ),
             command=(
                 "ros2 launch vica_nav2 nav2_map_test.launch.py"
@@ -349,6 +364,7 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             uses_map=True,
                     guard=("bt_navigator", "planner_server", "controller_serv", "amcl",),
+            fix_overlay=FIX_ENCODER,
 ),
         # slam 과 nav2 는 상호 배타다. 둘 다 wheel_ekf.launch.py 를 include 하므로
         # 함께 띄우면 /odom 과 odom→base_footprint 가 이중 발행되고, AMCL 과
@@ -1054,6 +1070,21 @@ else
 fi
 """
 
+# 수리판 덧씌움(FIX_ENCODER 위 설명). 끄기: 칸을 열기 전에 export VICA_FIX_OVERLAY=0.
+FIX_OVERLAY_BLOCK = """
+if [ "${{VICA_FIX_OVERLAY:-1}}" = "0" ]; then
+  printf '\\033[0;33m[수리판 끔]\\033[0m VICA_FIX_OVERLAY=0 — 본 빌드 {pkg}(수리 전)로 뜬다.\\n'
+elif grep -qs '{marker}' "$VICA_ROS_WS/install/{pkg}/{rel}"; then
+  printf '\\033[0;36m[수리판]\\033[0m 본 빌드 {pkg} 에 이미 들어 있다 — 덧씌우지 않는다.\\n'
+elif [ -f "{ws}/install/local_setup.bash" ] && grep -qs '{marker}' "{ws}/install/{pkg}/{rel}"; then
+  source "{ws}/install/local_setup.bash"
+  printf '\\033[0;36m[수리판]\\033[0m {pkg} <- %s · %s\\n' "{ws}" \\
+    "$(git -C "{ws}" log -1 --format='%h %ad' --date=format:'%m-%d %H:%M' 2>/dev/null)"
+else
+  printf '\\033[0;31m[경고]\\033[0m 수리판 설치본이 없다: %s/install/{pkg} — 본 빌드(수리 전)로 뜬다.\\n' "{ws}"
+fi
+"""
+
 # 감시 패키지는 운영 빌드에 없을 수 있다. 없을 때만 overlay를 덧씌운다.
 # 두 워크스페이스는 DDS로 통신하므로 나머지 노드와 섞여도 문제가 없다.
 OVERLAY_BLOCK = """
@@ -1158,6 +1189,10 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
     if term.cpp_overlay:
         ws, pkg = term.cpp_overlay
         overlay_block += CPP_OVERLAY_BLOCK.format(ws=ws, pkg=pkg)
+
+    if term.fix_overlay:
+        ws, pkg, rel, marker = term.fix_overlay
+        overlay_block += FIX_OVERLAY_BLOCK.format(ws=ws, pkg=pkg, rel=rel, marker=marker)
 
     if term.workdir:
         # 경로가 사라졌을 때 조용히 홈에서 실행되는 사고를 막는다.
