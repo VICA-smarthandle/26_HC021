@@ -358,3 +358,53 @@ VICA는 손잡이로 사람과 연결되어 있어서, 장애물 앞에서 급�
 - 주행 중에는 추론을 멈춰서 Jetson의 CPU를 주행에 양보합니다.
 
 <img width="900" alt="person_detector_node.py L130-L177" src="docs/images/code/code_5-10.png" />
+
+<br>
+
+### 📁 저장소 구조
+
+코드는 역할별로 저장소 3개에 나뉘어 있고, 이 저장소(26_HC021)는 소개·문서·개발 기록을 모아 둔 곳입니다. ⭐ 표시는 위 핵심 소스코드가 있는 위치입니다.
+
+```
+VICA-smarthandle (GitHub 조직)
+│
+├── 26_HC021/                           ← 지금 이 저장소: 소개·문서·개발 기록
+│   ├── README.md
+│   ├── docs/                           설계 문서, README 그림, 팀 작업 안내
+│   ├── devlog/                         날짜별 개발 기록
+│   ├── guideline/                      팀 개발 규칙
+│   ├── scripts/                        실행·측정 도구
+│   └── workspace.repos                 코드 저장소 3개를 한 번에 받는 목록
+│
+├── vica_ros2_ws/                       ROS 2 워크스페이스 (자율주행·미션·안전·하드웨어)
+│   └── src/
+│       ├── vica_mission_manager/       미션 매니저 (요청 확인·상태 관리)  ⭐ 5-1
+│       ├── vica_safety/                안전 관문·비상정지  ⭐ 5-2
+│       ├── mdrobot_can_control_cpp/    모터 드라이버 CAN·손잡이 속도 조절 (C++)  ⭐ 5-3 5-4
+│       ├── vica_vcc_controller/        동행 전용 컨트롤러 VCC (C++)  ⭐ 5-5 ~ 5-7
+│       ├── vica_perception/            사람 인식·추적 (YOLO)  ⭐ 5-10
+│       ├── vica_nav2/                  Nav2 설정·행동 트리·주행 레일
+│       ├── vica_localization/          EKF 위치 추정
+│       ├── vica_cartographer/          지도 작성
+│       ├── vica_user_guidance(_cpp)/   Smart Handle 방향 예고·진동·LED, 펌웨어
+│       ├── vica_sensor_adapters(_cpp)/ IMU·초음파 변환, 넘어짐 감지
+│       ├── vica_destination_manager/   지도별 목적지 저장·조회
+│       ├── vica_system_monitor/        로봇 상태 감시 (앱 진단 화면)
+│       ├── vica_interfaces/            공용 메시지·서비스
+│       └── ...                         로봇 모델, 바퀴 오도메트리, 라이다 등
+│
+├── vica-voice-llm/                     음성 서비스
+│   ├── src/                            호출어·긴급어·STT·LLM·TTS 노드  ⭐ 5-8
+│   ├── models/                         호출어·긴급어 감지 모델 (자체 학습)
+│   ├── ollama/                         로컬 LLM 설정
+│   ├── assets/                         미리 만든 안내 음성
+│   └── tests/                          자동 테스트
+│
+└── VICA_Supervisor/                    관리자 앱 (Flutter)
+    ├── lib/
+    │   ├── providers/                  상태·알림 처리  ⭐ 5-9
+    │   ├── screens/ · widgets/         화면
+    │   ├── ros/                        rosbridge 연결
+    │   └── models/ · services/         데이터 형식, 배송 문자 등
+    └── ros2/                           앱용 ROS 2 보조 도구
+```
