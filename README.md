@@ -80,9 +80,9 @@
 <a id="team"></a>
 ## **2. 팀원 소개(이름 기재X)**
 
-| 🛠️ | 🧭 | 🎙️ | 📱 | 👨‍🏫 |
+| <img src="docs/images/team/mentee1.jpg" width="120" alt="멘티1"> | <img src="docs/images/team/mentee2.jpg" width="120" alt="멘티2"> | <img src="docs/images/team/mentee3.jpg" width="120" alt="멘티3"> | <img src="docs/images/team/mentee4.jpg" width="120" alt="멘티4"> | 👨‍🏫 |
 |:---:|:---:|:---:|:---:|:---:|
-| **멘티1** | **멘티2** | **멘티3** | **멘티4** | **멘토** |
+| 🛠️ **멘티1** | 🧭 **멘티2** | 🎙️ **멘티3** | 📱 **멘티4** | **멘토** |
 | • 하드웨어 설계·제작 <br> • 전장(전원·배선) | • 자율주행 <br> • 안전 제어 | • 음성 인터페이스 <br> • LLM | • 관리자 앱 | • 프로젝트 멘토 <br> • 기술 자문 |
 
 ---
