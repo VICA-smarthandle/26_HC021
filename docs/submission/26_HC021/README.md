@@ -47,15 +47,16 @@
 
 **1-4. 주요 기능**
 
-| 순서 | 기능 | 내용 |
-|:---:|---|---|
-| 1 | 사용자 인식·접근 | 카메라와 객체인식모델(YOLOv11n커스텀학습)로 시각장애인 지팡이를 든 사람을 인식하면 다가가 안내를 제안합니다 |
-| 2 | 스마트핸들 | 사용자가 사용 의사를 표현하면 로봇을 회전시켜 스마트핸들을 내밀고, 진동으로 위치를 알립니다 |
-| 3 | 자연어로 목적지 지정 | "화장실 가고 싶어", "배 아파"처럼 일상적인 표현을 추론해 등록된 장소와 연결하고, 목적지를 확인합니다 |
-| 4 | 자율주행 | 관리자가 등록한 지도와 주행 레일을 따라 목적지까지 스스로 이동합니다. LiDAR·깊이 카메라·초음파로 장애물을 찾고, 직접 만든 동행 전용 컨트롤러(VCC)가 손잡이와 사람의 자리까지 계산해 부드럽게 피하고 코너 앞에서 미리 감속합니다 |
-| 5 | 동행 주행 | 손잡이 당김을 감지해 사용자의 걸음속도에 맞춰 감속, 회전 방향을 디렉션 패들로 손끝으로 알리며 장애물을 우회주행합니다 |
-| 상시 | 긴급 정지 | 대화 중이든 주행 중이든 긴급어를 상시 감시하고, LLM을 거치지 않고 바로 비상정지합니다 |
-| 운영 | 관리자 앱 | 지도 작성, 목적지·홈·금지구역 등록, 원격 주행·배송, 비상정지, 로봇 상태 진단을 앱 하나로 관리합니다 |
+<table>
+<tr><th align="center" nowrap>순서</th><th nowrap>기능</th><th>내용</th></tr>
+<tr><td align="center" nowrap>1</td><td nowrap>사용자 인식·접근</td><td>카메라와 객체인식모델(YOLOv11n커스텀학습)로 시각장애인 지팡이를 든 사람을 인식하면 다가가 안내를 제안합니다</td></tr>
+<tr><td align="center" nowrap>2</td><td nowrap>스마트핸들</td><td>사용자가 사용 의사를 표현하면 로봇을 회전시켜 스마트핸들을 내밀고, 진동으로 위치를 알립니다</td></tr>
+<tr><td align="center" nowrap>3</td><td nowrap>자연어로 목적지 지정</td><td>"화장실 가고 싶어", "배 아파"처럼 일상적인 표현을 추론해 등록된 장소와 연결하고, 목적지를 확인합니다</td></tr>
+<tr><td align="center" nowrap>4</td><td nowrap>자율주행</td><td>관리자가 등록한 지도와 주행 레일을 따라 목적지까지 스스로 이동합니다. LiDAR·깊이 카메라·초음파로 장애물을 찾고, 직접 만든 동행 전용 컨트롤러(VCC)가 손잡이와 사람의 자리까지 계산해 부드럽게 피하고 코너 앞에서 미리 감속합니다</td></tr>
+<tr><td align="center" nowrap>5</td><td nowrap>동행 주행</td><td>손잡이 당김을 감지해 사용자의 걸음속도에 맞춰 감속, 회전 방향을 디렉션 패들로 손끝으로 알리며 장애물을 우회주행합니다</td></tr>
+<tr><td align="center" nowrap>상시</td><td nowrap>긴급 정지</td><td>대화 중이든 주행 중이든 긴급어를 상시 감시하고, LLM을 거치지 않고 바로 비상정지합니다</td></tr>
+<tr><td align="center" nowrap>운영</td><td nowrap>관리자 앱</td><td>지도 작성, 목적지·홈·금지구역 등록, 원격 주행·배송, 비상정지, 로봇 상태 진단을 앱 하나로 관리합니다</td></tr>
+</table>
 
 **1-5. 기대 효과 및 활용 분야**
 - 기대 효과 : 시각장애인이 누군가에게 안내를 부탁하지 않고 혼자 낯선 실내 시설을 이용할 수 있습니다. 안내 인력의 단순 동행 업무를 대신하고, 로컬 LLM 사용으로 클라우드 API 사용료와 통신료가 들지 않습니다.
@@ -63,15 +64,16 @@
 
 **1-6. 기술 스택**
 
-| 분야 | 기술 |
-|---|---|
-| 연산·OS | Jetson Orin NX 16GB (reComputer J401) · Ubuntu 22.04 / JetPack 6.2 · CUDA |
-| 미들웨어·주행 | ROS 2 Humble · Nav2 (Route Server, SmacPlannerLattice, 자체 컨트롤러 VCC) · Cartographer · AMCL · robot_localization(EKF) |
-| 인지 | Intel RealSense D455 · YDLIDAR G2 · 초음파 · YOLO11s-seg(자체 데이터셋) + ByteTrack · TensorRT FP16 · Isaac ROS |
-| 음성·LLM | reSpeaker Mic Array v3.0 · openWakeWord(자체 학습 2종) · Qwen3-ASR 1.7B(transcribe.cpp) · KT Mi:dm 2.0 Mini(Ollama) · LangChain · Supertonic-3 · CosyVoice 3 |
-| 구동·하드웨어 | MDROBOT MD200T(CAN) + MDH100 인휠모터 ×2 · Smart Handle(로프릴·다회전 가변저항·서보·햅틱) · 24V LiFePO4 |
-| 관리자 앱 | Flutter(Dart) · rosbridge WebSocket · Android |
-| 시뮬레이션·도구 | Isaac Sim 6.0 · Docker · Foxglove Studio · RViz2 · Git/GitHub |
+<table>
+<tr><th nowrap>분야</th><th>기술</th></tr>
+<tr><td nowrap>연산·OS</td><td>Jetson Orin NX 16GB (reComputer J401) · Ubuntu 22.04 / JetPack 6.2 · CUDA</td></tr>
+<tr><td nowrap>미들웨어·주행</td><td>ROS 2 Humble · Nav2 (Route Server, SmacPlannerLattice, 자체 컨트롤러 VCC) · Cartographer · AMCL · robot_localization(EKF)</td></tr>
+<tr><td nowrap>인지</td><td>Intel RealSense D455 · YDLIDAR G2 · 초음파 · YOLO11s-seg(자체 데이터셋) + ByteTrack · TensorRT FP16 · Isaac ROS</td></tr>
+<tr><td nowrap>음성·LLM</td><td>reSpeaker Mic Array v3.0 · openWakeWord(자체 학습 2종) · Qwen3-ASR 1.7B(transcribe.cpp) · KT Mi:dm 2.0 Mini(Ollama) · LangChain · Supertonic-3 · CosyVoice 3</td></tr>
+<tr><td nowrap>구동·하드웨어</td><td>MDROBOT MD200T(CAN) + MDH100 인휠모터 ×2 · Smart Handle(로프릴·다회전 가변저항·서보·햅틱) · 24V LiFePO4</td></tr>
+<tr><td nowrap>관리자 앱</td><td>Flutter(Dart) · rosbridge WebSocket · Android</td></tr>
+<tr><td nowrap>시뮬레이션·도구</td><td>Isaac Sim 6.0 · Docker · Foxglove Studio · RViz2 · Git/GitHub</td></tr>
+</table>
 
 ---
 
@@ -95,12 +97,11 @@
 <a id="arch-overall"></a>
 ### 3-1. 시스템 구성도
 
-<img width="900" alt="S/W 전체 구성도" src="docs/images/sw_overview.png" />
-
 - **명령 흐름** : 음성 → 판단 → 주행 → 안전·구동 순서로 전달
 - **미션 매니저** : 모든 요청을 10가지 조건으로 확인 후 주행 허가
 - **안전 관문** : 버튼·앱·음성 비상정지를 한곳에서 관리, 관리자 확인 후에만 재출발
 
+<img width="900" alt="S/W 전체 구성도" src="docs/images/sw_overview.png" />
 <img width="900" alt="서비스 흐름도" src="docs/images/service_flow.png" />
 
 <details>
@@ -114,19 +115,19 @@
 <a id="arch-hw"></a>
 ### 3-2. 하드웨어 구성
 
-<img width="900" alt="VICA 실물" src="docs/images/vica_photo.png" />
-<img width="900" alt="H/W 구성도" src="docs/images/hw_overview.png" />
+- **자체 제작** : 프레임·하우징·손잡이 직접 설계
+- **모듈 구조** : 손잡이·센서·컴퓨터·배터리·구동 5개 모듈, 고장 시 모듈 단위 교체
 
 | 구성 | 부품 |
 |:---:|---|
 | 연산 | Jetson Orin NX 16GB (reComputer J401) |
 | 센서 | YDLIDAR G2, Intel RealSense D455, 초음파 센서(A22), reSpeaker Mic Array v3.0, 전류 센서(INA228) |
 | 구동 | MDROBOT MD200T 모터 드라이버(CAN) + MDH100 인휠모터 ×2 |
-| Smart Handle | 로프릴·다회전 가변저항, 서보 패들, 햅틱 모터, 터치센서, LED 바, 센서·핸들 제어 MCU |
+| Smart Handle | 포텐셔미터 로프릴, 디렉션 패들, 햅틱 모터, 터치센서, LED 바, 센서·핸들 제어 MCU |
 | 전원·안전 | 24V LiFePO4 배터리, DC 차단기, 24V→5V 컨버터, EMS 비상정지 스위치 |
 
-- **자체 제작** : 프레임·하우징·손잡이 직접 설계
-- **모듈 구조** : 손잡이·센서·컴퓨터·배터리·구동 5개 모듈, 고장 시 모듈 단위 교체
+<img width="900" alt="VICA 실물" src="docs/images/vica_photo.png" />
+<img width="900" alt="H/W 구성도" src="docs/images/hw_overview.png" />
 
 <details>
 <summary>전체 결선도</summary>
@@ -138,24 +139,24 @@
 <a id="arch-handle"></a>
 ### 3-3. 스마트 핸들
 
-<img width="900" alt="Smart Handle" src="docs/images/smart_handle.png" />
-
 안내견 하네스에서 착안, 로봇이 사용자 걸음에 맞추는 손잡이
 
-- **리코일 손잡이** : 당기는 만큼 감속, 끝까지 당기면 정지
-- **서보 패들·LED 바** : 회전 전 방향 미리 알림
+- **포텐셔미터 로프릴** : 당기는 만큼 감속, 끝까지 당기면 정지
+- **디렉션 패들·LED 바** : 회전 전 방향 미리 알림
 - **햅틱 모터** : 손잡이 위치·비상정지·도착을 진동으로 알림
 - **터치센서** : 손을 놓으면 즉시 정지
 
+<img width="900" alt="Smart Handle" src="docs/images/smart_handle.png" />
+
 <a id="arch-nav"></a>
 ### 3-4. 자율주행
-
-<img width="900" alt="동행 전용 주행 알고리즘 VCC" src="docs/images/vcc.png" />
 
 - **위치 추정** : 바퀴·IMU 센서 융합과 지도 매칭으로 현재 위치 계산
 - **경로** : 관리자가 그린 주행 레일을 따라 이동, 막힌 구간만 우회
 - **동행 전용 컨트롤러(VCC)** : 손잡이까지 포함한 크기로 계산, 장애물 부드럽게 회피, 코너 앞 미리 감속
 - **장애물 인식** : 라이다·깊이 카메라·초음파가 높이별로 나눠 감지
+
+<img width="900" alt="동행 전용 주행 알고리즘 VCC" src="docs/images/vcc.png" />
 
 <details>
 <summary>인지·위치·주행 상세 구성도</summary>
@@ -167,32 +168,32 @@
 <a id="arch-voice"></a>
 ### 3-5. 음성 서비스
 
-<img width="900" alt="음성·대화 층" src="docs/images/sw_voice.png" />
-
 - **호출어·긴급어** : "비카야"·"멈춰" 상시 감지, 긴급어는 LLM 없이 즉시 정지
 - **온디바이스 처리** : 음성 인식·LLM·음성 합성 모두 로봇 안에서 처리, 대화 내용 외부 전송 없음
 - **안전한 LLM** : LLM은 목적지 제안만, 출발 결정은 미션 매니저
 - **응답 속도** : 음성 인식 0.53초, LLM 판단 1.81초 (2026년 10월 실주행 중앙값)
 
+<img width="900" alt="음성·대화 층" src="docs/images/sw_voice.png" />
+
 <a id="arch-app"></a>
 ### 3-6. 관리자 앱
-
-<img width="900" alt="관리자 앱" src="docs/images/admin_app.png" />
 
 - **지도 설정** : 지도 작성, 목적지·홈·금지구역·주행 레일 지정
 - **주행 관리** : 원격 주행·배송·비상정지, 부품별 상태 진단
 - **알림** : 주행 실패·도움 요청 팝업, 배송 도착 문자
 - **안전** : 앱 요청도 미션 매니저 확인 후 실행
 
+<img width="900" alt="관리자 앱" src="docs/images/admin_app.png" />
+
 <a id="arch-vision"></a>
 ### 3-7. 객체 인식 및 추적
-
-<img width="900" alt="사용자 인식·접근" src="docs/images/perception.png" />
 
 - **자체 학습 모델** : 흰지팡이를 든 사람 데이터셋 직접 구축, YOLO11s-seg 학습
 - **추적** : 같은 사람은 같은 ID로 추적, 깊이 카메라로 거리·위치 계산
 - **접근** : 1.5~4 m 거리에 서 있는 사람에게 다가가 안내 제안
 - **성능** : 로봇 시점 재학습으로 정밀도 0.513 → 0.998, 재현율 0.716 → 0.964, 초당 61.4회 인식
+
+<img width="900" alt="사용자 인식·접근" src="docs/images/perception.png" />
 
 ---
 
@@ -202,7 +203,7 @@
 > 🎬 **YouTube 작품 소개영상**
 > VICA가 사용자와 손잡이로 연결된 채 함께 걷는 자율주행과, 호출어 "비카야" → LLM 목적지·의도 해석 → 음성 안내로 이어지는 음성 목적지 입력을 실제 로봇으로 시연한 영상입니다.
 
-[![VICA 시연영상](https://img.youtube.com/vi/teIxBrbtmoQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=teIxBrbtmoQ)
+[![VICA 시연영상](docs/images/video_thumbnail.jpg)](https://www.youtube.com/watch?v=teIxBrbtmoQ)
 
 ▶️ 썸네일을 클릭하면 유튜브에서 영상이 재생됩니다.
 
@@ -242,6 +243,8 @@
 
 음성, 관리자 앱, 사람 인식에서 오는 요청은 모두 미션 매니저를 거칩니다. 로봇의 상태(18개)에 따라 같은 말에도 다르게 반응하고, 목적지로 출발하기 전에는 `check_gate()` 로 10가지 조건(목적지 확정, 사용자 확인, 비상정지, 좌표, Nav2 준비 등)을 확인합니다.
 
+- 로봇을 직접 움직이지 않고 할 일 목록만 돌려주는 구조라서, ROS 없이도 18개 상태 × 11개 요청 = 198가지 경우를 테스트로 확인했습니다.
+
 ```python
 if intent.need_confirm:
     # ...
@@ -270,8 +273,6 @@ return [
     Navigate(dest, tree=NAV_TREE_GUIDED),
 ]
 ```
-
-- 로봇을 직접 움직이지 않고 할 일 목록만 돌려주는 구조라서, ROS 없이도 18개 상태 × 11개 요청 = 198가지 경우를 테스트로 확인했습니다.
 
 <br>
 
@@ -313,6 +314,8 @@ def state_for_command(self, estop_active, estop_fresh, cmd_alive, cmd_zero) -> S
 
 안전 관문을 통과한 속도 명령(`/cmd_vel_safe`)을 좌우 바퀴의 rpm으로 바꿔 MDROBOT MD200T 드라이버에 CAN으로 보냅니다. 두 바퀴 속도는 8바이트 프레임 하나에 같이 담습니다. 최고 속도는 그 전에 손잡이 값으로 먼저 제한됩니다(5-4).
 
+- Python으로 먼저 만든 뒤 C++로 옮겼습니다. 옮기고 나서 같은 입력 36만 개에서 두 버전이 보내는 CAN 프레임이 똑같은지 비교했습니다.
+
 ```cpp
 // 전진·회전 속도 → 좌우 바퀴 속도
 const double v_left = limited_linear_x - limited_angular_z * p.wheel_base_m / 2.0;
@@ -344,8 +347,6 @@ void send_vel_cmd(int64_t rpm1, int64_t rpm2, int ret_type)
 }
 ```
 
-- Python으로 먼저 만든 뒤 C++로 옮겼습니다. 옮기고 나서 같은 입력 36만 개에서 두 버전이 보내는 CAN 프레임이 똑같은지 비교했습니다.
-
 <br>
 
 ### 5-4. 스마트 핸들 · 가변저항 속도 조절
@@ -353,6 +354,8 @@ void send_vel_cmd(int64_t rpm1, int64_t rpm2, int ret_type)
 📄 [`vica_ros2_ws/src/mdrobot_can_control_cpp/include/mdrobot_can_control_cpp/motor_core.hpp`](vica_ros2_ws/src/mdrobot_can_control_cpp/include/mdrobot_can_control_cpp/motor_core.hpp)
 
 손잡이 줄은 로프릴 안의 다회전 가변저항과 연결되어 있습니다. 줄을 당기면 저항값이 바뀌고, 모터 드라이버가 이 값을 0~100 %로 보내 줍니다. 이 비율만큼 최고 속도를 낮추기 때문에 사용자가 당기면 로봇이 느려지고, 끝까지 당기면 멈춥니다.
+
+- 처음에는 0~100을 그대로 썼는데, 실제 줄은 55~98 구간에서만 움직여서 당겨도 속도가 거의 바뀌지 않았습니다. 이 구간을 0~100 %로 다시 늘려서 해결했습니다.
 
 ```cpp
 // 줄이 실제로 움직이는 구간(55~98)을 0~100 %로 늘린다
@@ -385,8 +388,6 @@ const double limited_linear_x = clampd(raw_linear_x, -allowed_linear, allowed_li
 const double limited_angular_z = clampd(raw_angular_z, -allowed_angular, allowed_angular);
 ```
 
-- 처음에는 0~100을 그대로 썼는데, 실제 줄은 55~98 구간에서만 움직여서 당겨도 속도가 거의 바뀌지 않았습니다. 이 구간을 0~100 %로 다시 늘려서 해결했습니다.
-
 <br>
 
 ### 5-5. 자율주행 ① 장애물을 피하는 차선 선택
@@ -394,6 +395,9 @@ const double limited_angular_z = clampd(raw_angular_z, -allowed_angular, allowed
 📄 [`vica_ros2_ws/src/vica_vcc_controller/src/core/lanes.cpp`](vica_ros2_ws/src/vica_vcc_controller/src/core/lanes.cpp)
 
 VICA는 손잡이로 사람과 연결되어 있어서, 장애물 앞에서 급하게 꺾으면 사람이 그대로 끌려갑니다. 그래서 직접 만든 컨트롤러(VCC)는 주행 레일을 좌우로 0.1 m씩 옮긴 13개 차선(±0.6 m)을 만들고, 매 주기 점수가 가장 낮은 차선으로 부드럽게 옮겨 갑니다.
+
+- 점수는 `10 × (장애물과 20 cm 거리에 모자란 만큼) + 1 × (레일에서 벗어난 거리) + 0.5 × (차선을 바꾸는 폭)` 입니다.
+- 차선을 너무 자주 바꾸면 손잡이가 좌우로 흔들려서, 막혔을 때가 아니면 바로 바꾸지 않습니다.
 
 ```cpp
 // 오른쪽 차선부터 점수를 매긴다 (점수가 같으면 우측 통행)
@@ -417,9 +421,6 @@ const double step = std::min(slope * std::abs(v) * dt, p_.lane_rate * dt);
 offset_ += std::clamp(target_ - offset_, -step, step);
 ```
 
-- 점수는 `10 × (장애물과 20 cm 거리에 모자란 만큼) + 1 × (레일에서 벗어난 거리) + 0.5 × (차선을 바꾸는 폭)` 입니다.
-- 차선을 너무 자주 바꾸면 손잡이가 좌우로 흔들려서, 막혔을 때가 아니면 바로 바꾸지 않습니다.
-
 <br>
 
 ### 5-6. 자율주행 ② 코너·장애물 앞 미리 감속
@@ -427,6 +428,9 @@ offset_ += std::clamp(target_ - offset_, -step, step);
 📄 [`vica_ros2_ws/src/vica_vcc_controller/src/core/speed_profile.cpp`](vica_ros2_ws/src/vica_vcc_controller/src/core/speed_profile.cpp)
 
 코너에 들어간 뒤에 속도를 줄이면 뒤따르는 사람이 덜컹거림을 그대로 느낍니다. 그래서 앞 1.5 m 경로를 미리 보고, 코너나 장애물이 있으면 닿기 전에 속도를 줄입니다.
+
+- 회전 반지름 0.8 m보다 급한 코너, 장애물과 0.35 m보다 가까운 구간에서 속도가 줄어듭니다.
+- `sqrt(v² + 2·a·d)` 는 "지금부터 감속하면 코너에서 목표 속도가 되는 최대 속도"입니다.
 
 ```cpp
 // 회전 반지름이 작을수록 느리게
@@ -450,9 +454,6 @@ double clearanceLimit(double c, const SpeedParams & p)
   return std::max(p.min_speed, p.desired * std::max(c, 0.0) / p.slow_clearance);
 }
 ```
-
-- 회전 반지름 0.8 m보다 급한 코너, 장애물과 0.35 m보다 가까운 구간에서 속도가 줄어듭니다.
-- `sqrt(v² + 2·a·d)` 는 "지금부터 감속하면 코너에서 목표 속도가 되는 최대 속도"입니다.
 
 <br>
 
@@ -483,6 +484,9 @@ si.collision_imminent = imminent;
 
 "비카야"라고 부른 뒤 한 말은 Qwen3-ASR이 글자로 바꿔 이 함수로 들어옵니다. 긴급어가 있으면 바로 긴급 처리하고, 나머지는 로컬 LLM(Mi:dm 2.0 Mini)이 의도와 목적지를 고릅니다. LLM의 결과는 로봇을 직접 움직이지 않고, 미션 매니저에 요청으로만 전달됩니다.
 
+- STT, LLM, TTS가 모두 로봇 안에서 돌아가서 목소리와 대화 내용이 외부로 나가지 않고, 인터넷이 끊겨도 동작합니다.
+- "그래", "아니" 같은 짧은 대답은 LLM 없이 바로 처리해서 기다리는 시간이 없습니다.
+
 ```python
 def _on_user_text(self, msg: String) -> None:
     text = msg.data.strip()
@@ -512,7 +516,6 @@ def _on_user_text(self, msg: String) -> None:
                 self._thinking_pub.publish(Bool(data=False))
     self._publish_intent(intent, text)
 
-
 def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False) -> None:
     # ...
     if should_forward_intent(intent):
@@ -525,9 +528,6 @@ def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False
         self._listen_pub.publish(Bool(data=True))        # 대답 들을 준비
 ```
 
-- STT, LLM, TTS가 모두 로봇 안에서 돌아가서 목소리와 대화 내용이 외부로 나가지 않고, 인터넷이 끊겨도 동작합니다.
-- "그래", "아니" 같은 짧은 대답은 LLM 없이 바로 처리해서 기다리는 시간이 없습니다.
-
 <br>
 
 ### 5-9. 관리자 앱 · 주행·도움 요청 알림
@@ -535,6 +535,8 @@ def _publish_intent(self, intent: VicaIntent, text: str, llm_first: bool = False
 📄 [`VICA_Supervisor/lib/providers/supervisor_provider.dart`](VICA_Supervisor/lib/providers/supervisor_provider.dart)
 
 로봇이 보내는 주행 이벤트(출발, 도착, 실패, 취소, 도움 요청)를 받아 관리자에게 알립니다. 사용자의 도움 요청은 주행 알림과 섞이지 않게 따로 띄우고, 배송이 끝나면 문자로도 알려 줍니다.
+
+- 알림이 너무 많으면 관리자가 읽지 않고 닫게 됩니다. 그래서 성공은 기록만 남기고, 같은 사건은 한 번만 띄웁니다.
 
 ```dart
 void _handleGoalEvent(Map<String, Object?> message) {
@@ -572,8 +574,6 @@ void _handleGoalEvent(Map<String, Object?> message) {
 }
 ```
 
-- 알림이 너무 많으면 관리자가 읽지 않고 닫게 됩니다. 그래서 성공은 기록만 남기고, 같은 사건은 한 번만 띄웁니다.
-
 <br>
 
 ### 5-10. 객체 인식 및 추적 · 시각장애인 찾기
@@ -581,6 +581,8 @@ void _handleGoalEvent(Map<String, Object?> message) {
 📄 [`vica_ros2_ws/src/vica_perception/vica_perception/person_detector_node.py`](vica_ros2_ws/src/vica_perception/vica_perception/person_detector_node.py)
 
 흰지팡이를 든 사람을 직접 모은 데이터로 학습한 YOLO11s-seg 모델을 TensorRT로 돌립니다. 같은 사람은 계속 같은 ID로 따라가고, 1초 넘게 안정적으로 보이면서 3초 동안 1.5~4 m 거리에 서 있으면 미션 매니저에 다가가도 되는지 요청합니다.
+
+- 주행 중에는 추론을 멈춰서 Jetson의 CPU를 주행에 양보합니다.
 
 ```python
 if not self._infer_gate.should_infer(now_ns):  # 주행 중에는 추론하지 않음
@@ -614,5 +616,3 @@ for i in range(len(boxes)):
     if out.approachable and self._throttle.should_send(track_id, steady_ns):
         self._request_approach(out)
 ```
-
-- 주행 중에는 추론을 멈춰서 Jetson의 CPU를 주행에 양보합니다.
