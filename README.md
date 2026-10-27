@@ -80,10 +80,10 @@
 <a id="team"></a>
 ## **2. 팀원 소개(이름 기재X)**
 
-| <img src="docs/images/team/mentee1.jpg" width="120" alt="멘티1"> | <img src="docs/images/team/mentee2.jpg" width="120" alt="멘티2"> | <img src="docs/images/team/mentee3.jpg" width="120" alt="멘티3"> | <img src="docs/images/team/mentee4.jpg" width="120" alt="멘티4"> | <img src="docs/images/team/mentor.png" width="120" alt="멘토"> |
-|:---:|:---:|:---:|:---:|:---:|
-| 🛠️ **멘티1** | 🧭 **멘티2** | 🎙️ **멘티3** | 📱 **멘티4** | 👨‍🏫 **멘토** |
-| • 하드웨어 설계·제작 <br> • 전장(전원·배선) | • 자율주행 <br> • 안전 제어 | • 음성 인터페이스 <br> • LLM | • 관리자 앱 | • 프로젝트 멘토 <br> • 기술 자문 |
+| <img src="docs/images/team/mentee1.jpg" width="120" alt="멘티1"> | <img src="docs/images/team/mentee2.jpg" width="120" alt="멘티2"> | <img src="docs/images/team/mentee3.jpg" width="120" alt="멘티3"> | <img src="docs/images/team/mentee4.jpg" width="120" alt="멘티4"> |
+|:---:|:---:|:---:|:---:|
+| 🛠️ **멘티1** | 🧭 **멘티2** | 🎙️ **멘티3** | 📱 **멘티4** |
+| • 하드웨어 설계·제작 <br> • 전장(전원·배선) | • 자율주행 <br> • 안전 제어 | • 음성 인터페이스 <br> • LLM | • 관리자 앱 |
 
 ---
 
@@ -204,6 +204,11 @@
 > VICA가 사용자와 손잡이로 연결된 채 함께 걷는 자율주행과, 호출어 "비카야" → LLM 목적지·의도 해석 → 음성 안내로 이어지는 음성 목적지 입력을 실제 로봇으로 시연한 영상입니다.
 
 [![VICA 시연영상](docs/images/video_thumbnail.jpg)](https://www.youtube.com/watch?v=teIxBrbtmoQ)
+
+> 🎬 **YouTube 로봇팔 기반 다층 이동 시연**
+> VICA가 로봇팔로 엘리베이터의 목적지 층 버튼을 눌러 다른 층으로 이동하는 과정을 실제 로봇으로 시연한 영상입니다.
+
+[![VICA 로봇팔 기반 다층 이동 시연](docs/images/video_thumbnail_multifloor.jpg)](https://www.youtube.com/watch?v=603iS9jpaVY)
 
 ▶️ 썸네일을 클릭하면 유튜브에서 영상이 재생됩니다.
 
