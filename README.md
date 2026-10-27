@@ -146,7 +146,7 @@
 - **햅틱 모터** : 손잡이 위치·비상정지·도착을 진동으로 알림
 - **터치센서** : 손을 놓으면 즉시 정지
 
-<img width="900" alt="Smart Handle" src="docs/images/smart_handle.png" />
+<img width="900" alt="Smart Handle" src="docs/images/smart_handle_v2.png" />
 
 <a id="arch-nav"></a>
 ### 3-4. 자율주행
@@ -156,7 +156,7 @@
 - **동행 전용 컨트롤러(VCC)** : 손잡이까지 포함한 크기로 계산, 장애물 부드럽게 회피, 코너 앞 미리 감속
 - **장애물 인식** : 라이다·깊이 카메라·초음파가 높이별로 나눠 감지
 
-<img width="900" alt="동행 전용 주행 알고리즘 VCC" src="docs/images/vcc.png" />
+<img width="900" alt="동행 전용 주행 알고리즘 VCC" src="docs/images/vcc_v2.png" />
 
 <details>
 <summary>인지·위치·주행 상세 구성도</summary>
@@ -183,7 +183,7 @@
 - **알림** : 주행 실패·도움 요청 팝업, 배송 도착 문자
 - **안전** : 앱 요청도 미션 매니저 확인 후 실행
 
-<img width="900" alt="관리자 앱" src="docs/images/admin_app.png" />
+<img width="900" alt="관리자 앱" src="docs/images/admin_app_v2.png" />
 
 <a id="arch-vision"></a>
 ### 3-7. 객체 인식 및 추적
