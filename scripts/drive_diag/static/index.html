@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>주행 진단</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="viz-root">
+<div class="wrap">
+
+<header>
+  <div class="titlebar">
+    <h1>주행 진단</h1>
+    <div class="controls">
+      <label for="bag">bag</label><select id="bag"></select>
+      <label for="map">지도</label><select id="map"></select>
+      <button id="go">분석</button>
+      <button id="redo" class="ghost" title="캐시를 무시하고 다시 계산">다시 계산</button>
+    </div>
+  </div>
+  <p class="meta" id="status">bag 과 지도를 고르고 [분석]을 누르세요</p>
+</header>
+
+<section id="s1">
+  <div class="shead"><h2>1. 한눈에 <span id="evalrange" class="meta"></span></h2><span id="evalgrade"></span></div>
+  <div id="eval" class="meta">분석 결과가 여기 나옵니다</div>
+</section>
+
+<section id="s2">
+  <div class="shead"><h2>2. 솔루션</h2><span class="meta">판정에서 나온 할 일 · 위에서부터 먼저</span></div>
+  <div id="sol" class="meta">—</div>
+</section>
+
+<section id="s3">
+  <div class="shead"><h2>3. 구간 표</h2><span class="meta">자동 분할 · 줄을 누르면 그 구간으로 · 칸 색 = 판정</span></div>
+  <div id="segs" class="tbl meta">—</div>
+</section>
+
+<section id="s4">
+  <div class="shead"><h2>4. x·y·θ 오차</h2>
+    <span class="legend">부호: 옆·θ + = 왼쪽(반시계) · 앞·옆은 로봇 방향 기준</span></div>
+  <div class="grid4">
+    <div class="col">
+      <div class="card">
+        <div class="chead"><h3>지도</h3><button id="fit" class="ghost small">맞춤</button></div>
+        <div class="legend">
+          <span><i class="sw s1"></i>AMCL 경로</span><span><i class="sw s2 dot"></i>지도 대조 자세</span>
+          <span><i class="sw s4 dot"></i>스캔(AMCL 자세)</span><span><i class="sw s2 dot"></i>스캔(지도 대조 자세)</span>
+        </div>
+        <canvas id="mapc"></canvas>
+        <p class="hint">휠 = 확대 · 드래그 = 이동 · 그래프를 누르면 그 시각의 자세·스캔을 지도에 그림</p>
+      </div>
+      <div class="card" id="cursorbox"><h3>커서</h3><div id="cursor" class="meta">그래프를 눌러 시각을 고르세요</div></div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <div class="chead"><h3>개요 — 속도</h3><span class="meta">주황 띠 = 지도 정합 낮음 · 드래그 = 구간 · 더블클릭 = 전체</span></div>
+        <div id="ov"></div>
+      </div>
+      <div class="card">
+        <div class="chead"><h3>① 위치추정 오차 = AMCL − 지도 대조</h3>
+          <span class="legend"><span><i class="sw s1"></i>AMCL − 지도 대조</span><span><i class="sw x"></i>탐색 범위 밖</span></span></div>
+        <p class="howto">읽는 법: 점이 <b>초록 띠</b>(옆 ±5 cm · θ ±1.5°) 안이면 좋음. <b>주황 띠</b> 구간은 지도와 실제가 달라 믿기 어려움. 빨간 × = 탐색 범위(±25 cm·±6°) 밖.</p>
+        <div id="m_lat"></div><div id="m_fwd"></div><div id="m_dyaw"></div><div id="m_score"></div>
+      </div>
+      <div class="card">
+        <div class="chead"><h3>② 오도메트리 오차 = 믿은 이동 − 라이다 이동</h3>
+          <span class="legend"><span><i class="sw s1"></i>EKF(바퀴 거리 + 자이로 방향)</span><span><i class="sw s2"></i>바퀴만</span></span></div>
+        <p class="howto">읽는 법: 구간 시작에서 0 으로 출발해 <b>끝으로 갈수록 벌어진 만큼</b>이 누적 오차. θ 선이 기울수록(°/m) 나쁨. 앞(거리)은 라이다 잣대가 2~3.5 % 길게 재 참고만.</p>
+        <div id="o_lat"></div><div id="o_fwd"></div><div id="o_dyaw"></div>
+      </div>
+      <div class="card">
+        <div class="chead"><h3>참고 — 회전 속도</h3>
+          <span class="legend"><span><i class="sw s1"></i>명령 w</span><span><i class="sw s3"></i>자이로 wz</span></span></div>
+        <div id="rot"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="shead"><h2>5. 판정 기준</h2><span class="meta">잠정 · scripts/drive_diag/evaluate.py THRESHOLDS 한 곳에서 고침</span></div>
+  <div id="thr" class="tbl meta">—</div>
+  <p class="note">지도 대조 = AMCL 자세 주변 ±25 cm·±6° 에서 스캔이 지도에 가장 잘 맞는 자세(pose_score 잣대, 칸 사이 보간).
+    라이다 이동 = 0.25 m·3° 마다 스캔-스캔 ICP 를 이어 붙여 TF 로 차체 이동으로 바꾼 것. 녹화된 bag 만 읽는다.</p>
+</section>
+
+</div>
+<div id="tip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
