@@ -572,9 +572,11 @@ def build_terms() -> dict[str, Term]:
             uses_map=True,
                     guard=("vica_mission_ma",),
             # ⑨ 가 뜬 뒤에 띄운다. 주행 중에 다시 뜨면 안 되므로 자동 재시작은 없다.
+            # 칸의 guard 'vica_mission_ma' 는 실제 이름과 달라 걸리지 않는다 — 노드 실행 파일이
+            # mission_manager 다(2026-11-14 실기). 유닛은 실제 이름으로 막는다.
             unit=Unit(
                 stage="2a", bundle="drive", restart="no", after=("nav2",),
-                wait=("proc bt_navigator 90",),
+                wait=("proc bt_navigator 90",), guard=("mission_manager",),
             ),
 ),
         # ------------------------------------------------------------------

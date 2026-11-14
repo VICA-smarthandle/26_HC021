@@ -365,6 +365,13 @@ class DriveBundle(unittest.TestCase):
         for name in ("bt_navigator", "amcl", "ekf_node", "encoder_feedbac", "cartographer_no"):
             self.assertIn(f'"{name}"', guard)
 
+    def test_mission_is_guarded_by_its_real_process_name(self):
+        # 칸의 guard 'vica_mission_ma' 는 실제 이름과 다르다 — 노드 실행 파일이
+        # mission_manager 라 comm 도 그렇다(2026-11-14 실기). 그 이름으로 막아야 두 벌이 안 뜬다.
+        text = (self.rc_dir / "run_mission.sh").read_text(encoding="utf-8")
+        guard = re.search(r"(?m)^vica_guard (.*) \|\| exit 75$", text).group(1)
+        self.assertIn('"mission_manager"', guard)
+
     def test_nav2_gets_time_to_bring_its_nodes_down(self):
         stop = int(re.search(r"TimeoutStopSec=(\d+)", self.read("vica-nav2.service")).group(1))
         self.assertGreaterEqual(stop, 30)
