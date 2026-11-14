@@ -70,6 +70,7 @@ CPP_GUIDANCE = ("$HOME/wt-guidance-cpp", "vica_user_guidance_cpp")   # feat/user
 # 본 빌드에도 같은 패키지(수리 전)가 있으므로, 본 빌드 파일에 수리 표식이 없을 때만 덧씌운다 —
 # 머지 뒤 본 빌드하면 저절로 꺼진다. (worktree, 패키지, 본 빌드 안 파일, 수리 표식)
 # 엔코더 시각 수리: 속도를 C5 프레임 수신 시각 간격으로(f425116, run100 실기 — EKF 직진 거리 +10 % 제거).
+# 2026-10-23 slam 칸에도(사용자 요청) — vica_slam_bringup 도 같은 encoder_feedback 을 띄우고 Cartographer 가 그 /odom 을 읽는다.
 FIX_ENCODER = (
     "$HOME/wt-encoder-stamp", "encoder_feedback",
     "lib/python3.10/site-packages/encoder_feedback/encoder_feedback.py", "def pick_dt",
@@ -408,6 +409,9 @@ def build_terms() -> dict[str, Term]:
                 "RViz Fixed Frame 을 map 으로 두고 지도가 자라는 것을 보며 끌고 다닌다.",
                 "회전은 천천히. 그리고 긴 복도는 한 방향으로만 훑지 말고 왕복한다 —",
                 "왔던 자리를 다시 지나야 pose graph 가 쌓인 오차를 당겨 준다.",
+                "",
+                "encoder 는 시각 수리판(~/wt-encoder-stamp, run100 실기)을 덧씌워 띄운다.",
+                "  수리 전 판으로: 칸을 열기 전에 export VICA_FIX_OVERLAY=0",
             ),
             command=(
                 "ros2 launch vica_cartographer vica_slam_bringup.launch.py"
@@ -415,6 +419,7 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
                     guard=("cartographer_no", "cartographer_oc", "ekf_node",
                            "encoder_feedbac",),
+            fix_overlay=FIX_ENCODER,
 ),
         "mission": Term(
             title="⑩ mission",
