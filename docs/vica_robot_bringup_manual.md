@@ -139,6 +139,56 @@ config를 건드리지 않고 무엇을 만들지만 보여준다. 지도가 바
 칸을 더하거나 배치를 바꾸려면 스크립트의 `build_terms()`와 `PROFILES`를 고치고 다시
 실행한다.
 
+### 자동 기동 (systemd, 2026-11-14)
+
+전원을 켜면 기본 스택이 터미널 없이 뜬다. 칸과 같은 `build_terms()` 정의에서 systemd
+사용자 유닛을 만들므로 명령은 칸과 같다. 근거와 실기 결과는
+`devlog/2026-11-14-자동기동-systemd-0·1단계.md`.
+
+| 무엇 | 유닛 | 부팅 뒤(실측) |
+| --- | --- | --- |
+| ① can1 | `vica-can.service`(system) | 10초 |
+| ② display · ③ lidar · ⑪ app · web · map supervisor · ⑦ imu | `vica-<칸>.service` | 17초 |
+| ④ safety → ⑤ motor | `vica-safety` → `vica-motor` | 17초 → 20초 |
+| 컨테이너 → ⑥ d455 | `vica-container` → `vica-d455` | docker 가 뜬 뒤(35초 → 53초) |
+
+묶음은 `vica-base.target` 이다. ⑨ Nav2·⑩ Mission·⑫ 음성·⑮ detector 는 아직 칸에서 띄운다.
+
+**설치(최초 1회).** `feat/autostart` 작업 트리에서 한다.
+
+```bash
+sudo bash scripts/autostart/install.sh                          # can1 부팅 설정 · linger · 저널 보존
+python3 scripts/vica_terminator_layout.py --units --stage 1c    # 유닛 생성 (rc·config 는 안 쓴다)
+systemctl --user daemon-reload && systemctl --user enable vica-base.target
+```
+
+`--stage` 는 켤 범위다. `1a` 바퀴 무관 → `1b` 카메라 쪽 → `1c` safety·motor.
+
+**쓰는 명령.**
+
+| 하려는 일 | 명령 |
+| --- | --- |
+| 상태 | `systemctl --user list-units 'vica-*' --all` |
+| 로그 | `journalctl --user-unit=vica-app -f` |
+| 한 유닛만 내리고 칸에서 직접 실행 | `systemctl --user stop vica-motor` 뒤 그 칸에서 실행 |
+| 지금만 전부 내림 | `systemctl --user stop vica-base.target` |
+| 부팅 등록까지 끔 | `systemctl --user disable --now vica-base.target` |
+| root 설치분 되돌림 | `sudo bash scripts/autostart/uninstall.sh` |
+
+**달라지는 것.**
+
+- ① can1 칸은 누르지 않는다. 부팅 때 UP 이 된다. 스크립트는 링크를 내리지 않는다.
+- 유닛으로 뜬 칸(②③④⑤⑦)을 터미네이터에서 열면 `[중복]` 으로 거부된다. 정상이다.
+- **⑪ app 칸은 실행하지 않는다.** rosbridge 는 프로세스 이름이 `python3` 라 그 칸의 중복
+  검사가 걸리지 않는다. 누르면 앱 브리지 노드가 두 벌이 된다.
+- **⑥ d455 칸에서 `./run_d455_cloud.sh` 를 치지 않는다.** 시작할 때 떠 있는 카메라를
+  `pkill -9` 한다.
+- 물리 버튼을 푼 채 켜면 부팅 약 26초 뒤 reset 없이 `READY_TO_GO` 가 된다. 그때부터 앱
+  teleop 이 통한다. 버튼을 누른 채 켜면 래치가 유지되고, 풀고 앱에서 reset 해야 한다.
+- 앱 브리지는 부팅 시점의 `maps/CURRENT_MAP` 으로 지도가 고정된다. 지도를 새로 그린 뒤에는
+  `systemctl --user restart vica-app` 을 한다.
+- 터미네이터 칸을 닫아도, 원격 화면이 끊겨도 유닛은 계속 돈다.
+
 ## 4. 음성·LLM 최초 1회 준비
 
 이 절은 장비를 새로 세팅하거나 `.venv`를 다시 만들 때만 수행한다. 배경 설명은
