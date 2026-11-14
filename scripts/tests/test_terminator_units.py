@@ -148,7 +148,8 @@ class RunScriptContent(unittest.TestCase):
         for key, term in unit_terms().items():
             text = run_script(key, term)
             self.assertNotRegex(text, r"docker exec[^\n]* -it\b", key)
-            self.assertNotIn("sudo ", text, key)
+            # 실행되는 sudo 만 본다. 안내 문구(printf '… sudo apt install …')는 괜찮다.
+            self.assertNotRegex(text, r"(?m)(^|[;&|])\s*sudo\b", key)
             self.assertNotIn("history -s", text, key)
             self.assertNotRegex(text, r"(?m)^vica_rs$", key)
 
@@ -305,6 +306,74 @@ class Stages(unittest.TestCase):
     def test_unknown_stage_is_rejected(self):
         with self.assertRaises(SystemExit):
             g.units_upto(g.build_terms(), "9z")
+
+
+class DriveBundle(unittest.TestCase):
+    """주행 묶음(2a). 부팅 때는 뜨지 않고, vica-drive.target 을 시작할 때만 뜬다."""
+
+    DRIVE = {"nav2", "posecheck", "mission", "handle", "monitor"}
+
+    def setUp(self):
+        self.terms = g.build_terms()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.rc_dir = self.tmp / "vica-terminator"
+        self.sd_dir = self.tmp / "systemd-user"
+        g.write_units(self.terms, "2a", ROS_WS, MAP_ID, self.rc_dir, self.sd_dir)
+
+    def read(self, name):
+        return (self.sd_dir / name).read_text(encoding="utf-8")
+
+    def test_stage_2a_adds_the_drive_units(self):
+        added = set(g.units_upto(self.terms, "2a")) - set(g.units_upto(self.terms, "1c"))
+        self.assertEqual(added, self.DRIVE)
+
+    def test_nothing_in_the_drive_bundle_starts_at_boot(self):
+        base = self.read("vica-base.target")
+        for key in self.DRIVE:
+            self.assertNotIn(f"vica-{key}.service", base, key)
+        self.assertNotIn("WantedBy", self.read("vica-drive.target"))
+
+    def test_drive_target_pulls_its_units_and_needs_the_base_bundle(self):
+        drive = self.read("vica-drive.target")
+        for key in self.DRIVE:
+            self.assertIn(f"vica-{key}.service", drive, key)
+        self.assertIn("Requires=vica-base.target\n", drive)
+        self.assertIn("After=vica-base.target\n", drive)
+
+    def test_drive_units_stop_with_their_own_bundle_only(self):
+        # 주행을 내릴 때 기본 묶음(motor 포함)은 건드리지 않는다.
+        for key in self.DRIVE:
+            text = self.read(f"vica-{key}.service")
+            self.assertIn("PartOf=vica-drive.target\n", text, key)
+            self.assertNotIn("PartOf=vica-base.target", text, key)
+        self.assertIn("PartOf=vica-base.target\n", self.read("vica-motor.service"))
+
+    def test_drive_units_start_after_the_base_bundle(self):
+        for key in self.DRIVE:
+            after = re.search(r"(?m)^After=(.*)$", self.read(f"vica-{key}.service")).group(1)
+            self.assertIn("vica-base.target", after.split(), key)
+
+    def test_units_that_move_the_robot_are_never_restarted_automatically(self):
+        for key in ("nav2", "mission", "handle"):
+            self.assertIn("Restart=no\n", self.read(f"vica-{key}.service"), key)
+
+    def test_nav2_refuses_to_start_beside_another_odometry_source(self):
+        # Nav2 와 SLAM 은 둘 다 EKF·encoder 를 띄운다. 겹치면 /odom 발행자가 둘이 된다.
+        text = (self.rc_dir / "run_nav2.sh").read_text(encoding="utf-8")
+        guard = re.search(r"(?m)^vica_guard (.*) \|\| exit 75$", text).group(1)
+        for name in ("bt_navigator", "amcl", "ekf_node", "encoder_feedbac", "cartographer_no"):
+            self.assertIn(f'"{name}"', guard)
+
+    def test_nav2_gets_time_to_bring_its_nodes_down(self):
+        stop = int(re.search(r"TimeoutStopSec=(\d+)", self.read("vica-nav2.service")).group(1))
+        self.assertGreaterEqual(stop, 30)
+
+    def test_mission_and_handle_wait_for_what_nav2_brings_up(self):
+        mission = self.read("vica-mission.service")
+        self.assertIn("vica-nav2.service", mission)
+        self.assertRegex(mission, r"vica_wait\.sh proc bt_navigator \d+")
+        self.assertRegex(self.read("vica-handle.service"), r"vica_wait\.sh proc ekf_node \d+")
 
 
 class WriteUnits(unittest.TestCase):

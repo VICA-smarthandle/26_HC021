@@ -107,7 +107,9 @@ GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py -
 #   1a  바퀴와 무관: TF · 라이다 · 앱 연결 · 웹 · 지도 감독
 #   1b  카메라 쪽: 컨테이너 · D455 · IMU
 #   1c  safety · motor — 여기부터 바퀴가 돌 수 있다
-STAGES = ("1a", "1b", "1c")
+#   2a  주행 묶음: nav2 · posecheck · mission · handle · monitor. 부팅 때는 안 뜬다 —
+#       `systemctl --user start vica-drive.target` 으로(뒤에는 앱이) 띄운다
+STAGES = ("1a", "1b", "1c", "2a")
 
 AUTO = "auto"
 HOLD = "hold"
@@ -489,6 +491,14 @@ def build_terms() -> dict[str, Term]:
             uses_map=True,
                     guard=("bt_navigator", "planner_server", "controller_serv", "amcl",),
             fix_overlay=FIX_ENCODER,
+            # 주행 묶음. 이 launch 가 EKF·encoder 를 함께 띄우므로, 그 둘이나 SLAM 이 이미 떠
+            # 있으면 시작하지 않는다(/odom 발행자 2개 — 08-12 위치 발산). 내릴 때 노드가
+            # 많아 시한을 길게 준다. 죽어도 자동으로 다시 띄우지 않는다.
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no",
+                guard=("ekf_node", "encoder_feedbac", "cartographer_no"),
+                stop_sec=30,
+            ),
 ),
         # slam 과 nav2 는 상호 배타다. 둘 다 wheel_ekf.launch.py 를 include 하므로
         # 함께 띄우면 /odom 과 odom→base_footprint 가 이중 발행되고, AMCL 과
@@ -561,6 +571,11 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             uses_map=True,
                     guard=("vica_mission_ma",),
+            # ⑨ 가 뜬 뒤에 띄운다. 주행 중에 다시 뜨면 안 되므로 자동 재시작은 없다.
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no", after=("nav2",),
+                wait=("proc bt_navigator 90",),
+            ),
 ),
         # ------------------------------------------------------------------
         # ⑪~⑬ 앱·감시·음성.
@@ -600,6 +615,9 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             monitor_overlay=True,
                     guard=("robot_health_mo", "external_diagno", "aggregator_node",),
+            # navigation 이 필수 구성요소라 주행 묶음에 둔다. 기본 묶음에 두면 지도 그리기
+            # 중에 늘 결함으로 뜬다.
+            unit=Unit(stage="2a", bundle="drive", after=("mission",)),
 ),
         "gui": Term(
             title="app GUI",
@@ -748,6 +766,9 @@ def build_terms() -> dict[str, Term]:
             command="ros2 run vica_nav2 pose_bootstrap_node",
             mode=HOLD,
                     guard=("pose_bootstrap_",),
+            unit=Unit(
+                stage="2a", bundle="drive", after=("nav2",), wait=("proc amcl 90",),
+            ),
 ),
         # 2026-08-28 복원 — posecheck 와 같은 사연. rc 원문은 t_supervisor.rc.
         "supervisor": Term(
@@ -813,6 +834,11 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
                     guard=("turn_guide_node", "user_guidance_d",),
             cpp_overlay=CPP_GUIDANCE,
+            # /odom 이 먼저다(⑨ 의 EKF). 초음파를 내므로 주행 묶음 전체에 필요하다.
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no", after=("nav2",),
+                wait=("proc ekf_node 90",),
+            ),
 ),
         "detector": Term(
             title="⑮ detector",
@@ -1449,7 +1475,9 @@ vica_guard_cmdline {pattern_q} || exit 75
 
 TARGET_TITLES = {
     "base": "기본 묶음 — 부팅 때 자동 기동",
+    "drive": "주행 묶음 — 주행 모드를 고를 때",
 }
+BOOT_BUNDLE = "base"
 
 
 def unit_name(key: str) -> str:
@@ -1501,8 +1529,12 @@ def render_unit(key: str, term: Term, rc_dir: Path) -> str:
         # 묶음을 끄면 같이 꺼진다. 유닛끼리는 순서(After)만 건다.
         f"PartOf=vica-{unit.bundle}.target",
     ]
-    if unit.after:
-        lines.append("After=" + " ".join(unit_name(k) for k in unit.after))
+    after = [unit_name(k) for k in unit.after]
+    if unit.bundle != BOOT_BUNDLE:
+        # 기본 묶음(센서·safety·motor)이 먼저다. 순서만 건다.
+        after.insert(0, f"vica-{BOOT_BUNDLE}.target")
+    if after:
+        lines.append("After=" + " ".join(after))
     lines += ["StartLimitIntervalSec=60", "StartLimitBurst=5", "", "[Service]", "Type=simple"]
 
     waited = 0
@@ -1538,19 +1570,23 @@ def render_unit(key: str, term: Term, rc_dir: Path) -> str:
 
 
 def render_target(bundle: str, keys: list[str]) -> str:
-    """묶음 target. 멤버를 Wants 로 당긴다 — 하나가 실패해도 나머지는 뜬다."""
-    return "\n".join(
-        [
-            f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
-            "[Unit]",
-            f"Description=VICA {TARGET_TITLES[bundle]}",
-            "Wants=" + " ".join(unit_name(k) for k in keys),
-            "",
-            "[Install]",
-            "WantedBy=default.target",
-            "",
-        ]
-    )
+    """묶음 target. 멤버를 Wants 로 당긴다 — 하나가 실패해도 나머지는 뜬다.
+
+    부팅 때 뜨는 것은 기본 묶음뿐이다. 나머지 묶음은 [Install] 이 없어 누가 시작해야만
+    뜨고, 기본 묶음을 필요로 한다(기본 묶음을 내리면 함께 내려간다).
+    """
+    lines = [
+        f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
+        "[Unit]",
+        f"Description=VICA {TARGET_TITLES[bundle]}",
+        "Wants=" + " ".join(unit_name(k) for k in keys),
+    ]
+    if bundle == BOOT_BUNDLE:
+        lines += ["", "[Install]", "WantedBy=default.target"]
+    else:
+        lines += [f"Requires=vica-{BOOT_BUNDLE}.target", f"After=vica-{BOOT_BUNDLE}.target"]
+    lines.append("")
+    return "\n".join(lines)
 
 
 def units_upto(terms: dict[str, Term], stage: str) -> dict[str, Term]:
