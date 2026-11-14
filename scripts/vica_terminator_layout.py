@@ -34,6 +34,15 @@ hold를 쓰는 이유는 세 가지다.
 현재 링크 상태만 읽어서 보여주고, 실제 설정 명령은 사람이 눌러야 나간다.
 
 기존 `~/.config/terminator/config`는 타임스탬프를 붙여 백업한다.
+
+자동 기동(2026-11-14). 같은 칸 정의에서 systemd 사용자 유닛도 만든다.
+
+    python3 scripts/vica_terminator_layout.py --units --stage 1a   # 유닛만. rc·config 는 안 쓴다
+    systemctl --user daemon-reload && systemctl --user enable vica-base.target
+
+유닛은 칸과 같은 환경 블록으로 같은 명령을 터미널 없이 띄운다. 칸은 그대로 쓸 수 있다 —
+유닛이 먼저 떠 있으면 칸의 `vica_guard`가 두 번째 실행을 거부한다. 단계(1a → 1b → 1c)는
+STAGES 주석을 본다. 1c 부터 바퀴가 돌 수 있다.
 """
 from __future__ import annotations
 
@@ -84,6 +93,22 @@ DEFAULT_MAP_ID = "vica_map_0630"
 RC_DIR = HOME / ".config" / "vica-terminator"
 TERMINATOR_CONFIG = HOME / ".config" / "terminator" / "config"
 
+# systemd 사용자 유닛 출력(`--units`, 2026-11-14 자동 기동). 칸과 같은 Term 정의에서 유닛을
+# 만든다 — 명령의 정본은 계속 이 파일 한 곳이다. `--units` 는 rc 와 terminator config 를
+# 쓰지 않는다(아래 write_units).
+SYSTEMD_USER_DIR = HOME / ".config" / "systemd" / "user"
+AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
+# 유닛이 부르는 도우미. 저장소 경로가 아니라 RC_DIR/bin 의 사본을 부른다 — 작업 트리가
+# 다른 브랜치로 바뀌어도 부팅이 깨지지 않게.
+HELPER_SCRIPTS = ("vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh")
+GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py --units"
+
+# 켜는 순서. 재부팅으로 하나씩 확인하며 올린다. 단계를 적지 않으면 유닛을 만들지 않는다.
+#   1a  바퀴와 무관: TF · 라이다 · 앱 연결 · 웹 · 지도 감독
+#   1b  카메라 쪽: 컨테이너 · D455 · IMU
+#   1c  safety · motor — 여기부터 바퀴가 돌 수 있다
+STAGES = ("1a", "1b", "1c")
+
 AUTO = "auto"
 HOLD = "hold"
 SHELL = "shell"
@@ -98,6 +123,53 @@ OBSOLETE_LAYOUTS = (
     "vica_map",
     "vicavoice",
 )
+
+
+class Unit:
+    """칸 하나를 터미널 없이 띄우는 systemd 사용자 유닛(`--units`).
+
+    칸의 rc 는 이 값을 읽지 않는다. 유닛을 붙여도 칸은 그대로다.
+    """
+
+    def __init__(
+        self,
+        stage: str,
+        bundle: str = "base",
+        command: str = "",
+        restart: str = "on-failure",
+        after: tuple[str, ...] = (),
+        wait: tuple[str, ...] = (),
+        guard: tuple[str, ...] = (),
+        guard_cmdline: str = "",
+        stop_pattern: str = "",
+        stop_sec: int = 20,
+    ) -> None:
+        # 이 유닛이 묶음에 들어오는 단계(STAGES).
+        self.stage = stage
+        # 묶음. vica-<bundle>.target 이 이 유닛을 당긴다.
+        self.bundle = bundle
+        # 유닛 전용 명령. 비어 있으면 칸의 명령 그대로. 터미널(-it)·함수(vica_rs)에
+        # 기대는 칸만 바꿔 적는다.
+        self.command = command
+        # 죽었을 때. 바퀴·안전에 닿는 유닛은 "no" — 사람이 보고 다시 띄운다.
+        self.restart = restart
+        # 먼저 시작돼야 하는 칸 키. 순서만 건다(Requires·BindsTo 는 쓰지 않는다 —
+        # motor 재기동이 다른 유닛으로 번지지 않게).
+        self.after = after
+        # 시작 전 대기. vica_wait.sh 인자 "<종류> <대상> <초>". 칸에서는 사람이 순서를 지켰다.
+        self.wait = wait
+        # 칸의 guard 에 더해 볼 프로세스 이름(15자).
+        self.guard = guard
+        # 명령줄로 찾는 중복 검사(`pgrep -f`). `#!/usr/bin/env python3` 로 뜨는 프로세스는
+        # comm 이 python3 라 이름(guard)으로는 못 찾는다 — rosbridge 가 그렇다(2026-11-14 실기).
+        # 반드시 ^ 로 명령줄 맨 앞에 묶는다. 안 묶으면 그 글자를 담은 아무 셸
+        # (grep·tail·확인용 명령)이나 걸려 유닛이 기동을 거부한다 — 같은 날 실제로 그랬다.
+        self.guard_cmdline = guard_cmdline
+        # 유닛 묶음 밖에서 도는 프로세스의 명령줄 패턴(docker exec 로 띄운 것).
+        # 정지 때 vica_ctr_stop.sh 가 이 패턴으로 찾아 내린다. guard_cmdline 처럼 ^ 로 묶는다 —
+        # 걸린 프로세스는 SIGKILL 까지 받으므로, 글자만 담은 다른 셸이 걸리면 안 된다.
+        self.stop_pattern = stop_pattern
+        self.stop_sec = stop_sec
 
 
 class Term:
@@ -117,6 +189,7 @@ class Term:
         uses_map: bool = False,
         cpp_overlay: tuple[str, str] = (),
         fix_overlay: tuple[str, str, str, str] = (),
+        unit: Unit | None = None,
     ) -> None:
         self.title = title
         self.note = note
@@ -140,6 +213,8 @@ class Term:
         self.cpp_overlay = cpp_overlay
         # (worktree, 패키지, 본 빌드 안 파일, 수리 표식) — 본 빌드에 표식이 없을 때만 덧씌운다. FIX_ENCODER 위 설명.
         self.fix_overlay = fix_overlay
+        # 자동 기동 유닛. None 이면 칸으로만 쓴다(키 입력·sudo·화면이 필요한 칸).
+        self.unit = unit
 
 
 # 음성(⑫·⑬) 중복 검사 — launch 와 .venv 파이썬 노드(-m src.ros_*)를 명령줄로 찾는다(2026-10-12).
@@ -200,6 +275,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch vica_description robot_state.launch.py",
             mode=AUTO,
+            unit=Unit(stage="1a"),
                     guard=("robot_state_pub", "joint_state_pub",),
 ),
         "lidar": Term(
@@ -215,6 +291,8 @@ def build_terms() -> dict[str, Term]:
                 " -p flip_x_axis:=true -p scan_mode:=Express"
             ),
             mode=AUTO,
+            # 부팅 직후에는 udev 가 /dev/rplidar 를 아직 안 만들었을 수 있다.
+            unit=Unit(stage="1a", wait=("path /dev/rplidar 60",)),
                     guard=("rplidar_node",),
 ),
         "safety": Term(
@@ -226,6 +304,9 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch vica_safety safety_bringup.launch.py",
             mode=AUTO,
+            # emergency_stop_node 는 CAN 소켓을 기동 때 한 번만 연다. can1 이 생긴 뒤에 띄운다.
+            # 죽으면 자동으로 다시 띄우지 않는다 — safety 없이는 아무것도 안 움직이고, 사람이 본다.
+            unit=Unit(stage="1c", restart="no", wait=("path /sys/class/net/can1 90",)),
                     guard=("emergency_stop_", "safety_supervis", "app_emergency_n",),
 ),
         # ------------------------------------------------------------------
@@ -242,6 +323,12 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch mdrobot_can_control motor_bringup.launch.py",
             mode=HOLD,
+            # 부팅 때 자동(2026-11-14 사용자 결정). ④ 뒤에, can1 이 UP 인 것을 확인하고 띄운다.
+            # 재기동이 Nav2 를 죽인 전례(09-07)가 있어 자동으로 다시 띄우지 않는다.
+            unit=Unit(
+                stage="1c", restart="no", after=("safety",),
+                wait=("canup can1 90", "proc safety_supervis 60"),
+            ),
                     guard=("mdrobot_can_ke", "keyboard_knob",),
             cpp_overlay=CPP_MOTOR,
 ),
@@ -260,6 +347,41 @@ def build_terms() -> dict[str, Term]:
             command="vica_rs",
             mode=HOLD,
             ros=False,
+            # 칸은 vica_rs 로 컨테이너에 들어가 사람이 스크립트를 친다. 유닛은 떠 있는
+            # 컨테이너에 터미널 없이 exec 한다. 그 프로세스는 컨테이너 쪽 소속이라 정지 때
+            # 명령줄로 찾아 내린다. 스크립트가 시작할 때 남의 카메라를 pkill -9 하므로 guard 를 건다.
+            #
+            # 정지 패턴은 launch 와 노드를 둘 다 잡는다. run_d455_cloud.sh 가 launch 를 `&` 로
+            # 띄우는데, 터미널 없는 bash 는 그런 프로세스의 SIGINT 를 무시로 둔다. launch 에만
+            # 보내면 13초 동안 반응이 없고, SIGTERM 으로 올리면 launch 만 죽어 노드가 고아로
+            # 남는다(2026-11-14 실기). 노드는 SIGINT 를 잡아 4초 안에 내려가고, 노드가 끝나면
+            # launch 도 끝난다. 칸에서는 Ctrl+C 가 노드에도 직접 가서 드러나지 않던 문제다.
+            unit=Unit(
+                stage="1b",
+                command=(
+                    "docker exec vica_rs_container bash -lc"
+                    " 'cd /workspaces/isaac_ros-dev && ./run_d455_cloud.sh'"
+                ),
+                after=("container",),
+                wait=("container vica_rs_container 120",),
+                guard=("realsense2_came",),
+                stop_pattern=(
+                    "^[^ ]*(python3 [^ ]*ros2 launch realsense2_camera"
+                    "|/realsense2_camera_node )"
+                ),
+                stop_sec=25,
+            ),
+        ),
+        "container": Term(
+            title="컨테이너 (자동 기동 전용)",
+            note=(
+                "vica_rs_container 를 터미널 없이 띄우고 살아 있는 동안 붙어 있는다.",
+                "칸 배치에는 없다 — 칸에서는 ⑥ 의 vica_rs 가 같은 컨테이너에 들어간다.",
+            ),
+            command='"$VICA_BIN/vica_container.sh"',
+            mode=HOLD,
+            ros=False,
+            unit=Unit(stage="1b", stop_sec=10),
         ),
         "imu": Term(
             title="⑦ imu",
@@ -280,6 +402,7 @@ def build_terms() -> dict[str, Term]:
                 " -p target_frame:=base_link"
             ),
             mode=AUTO,
+            unit=Unit(stage="1b"),
                     guard=("imu_base_link_a",),
 ),
         "segnet": Term(
@@ -454,6 +577,15 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             uses_map=True,
+            # 칸과 같은 명령으로 띄운다. map_yaml 을 빼면 자동 감지가 될 것 같지만, 이 launch 는
+            # 빈 값을 `-p map_yaml:=` 로 넘기고 rcl 이 해석하지 못해 vica_status_app_node 가
+            # 죽는다(2026-11-14 실기 — launch 는 살아 있어 유닛은 active 로 보였다).
+            # 그래서 부팅 때 지도가 고정된다. 지도를 새로 그린 뒤에는 이 유닛을 다시 띄워야
+            # /robot_status 의 map_id 가 바뀐다.
+            unit=Unit(
+                stage="1a",
+                guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
+            ),
                     guard=("rosbridge_webso",),
 ),
         "monitor": Term(
@@ -591,6 +723,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command=f"cd {SUPERVISOR}/build/web && python3 -m http.server 5000",
             mode=HOLD,
+            unit=Unit(stage="1a", guard_cmdline="^[^ ]*python3 -m http.server 5000"),
             ros=False,
             # 웹 빌드가 있는지, 5000번이 이미 열려 있지 않은지(두 번 띄움) 먼저 본다.
             precheck=(
@@ -628,6 +761,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 run vica_cartographer mapping_supervisor_node",
             mode=HOLD,
+            unit=Unit(stage="1a"),
                     guard=("mapping_supervi",),
 ),
         "record": Term(
@@ -1175,11 +1309,11 @@ def rc_name(term_key: str) -> str:
     return f"t_{term_key}"
 
 
-def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
-    """터미널 한 칸의 rc 내용을 만든다.
+def _env_blocks(term: Term, ros_ws: Path, fallback_map_id: str) -> tuple[str, str, str]:
+    """ROS 환경 · 덧씌움 · 작업 디렉터리 블록. 칸의 rc 와 유닛 실행 스크립트가 같이 쓴다.
 
-    `fallback_map_id`는 `maps/CURRENT_MAP`이 없을 때만 쓰인다. 생성 시점의
-    이름을 명령에 박지 않는다 — 그것이 칸마다 지도가 갈리던 원인이었다.
+    둘이 다른 환경으로 뜨면 "칸에서는 되는데 자동 기동에서는 안 된다"가 된다.
+    그래서 한 곳에서 만든다.
     """
     ros_block = (
         ROS_BLOCK.format(ros_ws=ros_ws, map_id=fallback_map_id) if term.ros else ""
@@ -1208,6 +1342,17 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         )
     else:
         cd_block = ""
+
+    return ros_block, overlay_block, cd_block
+
+
+def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
+    """터미널 한 칸의 rc 내용을 만든다.
+
+    `fallback_map_id`는 `maps/CURRENT_MAP`이 없을 때만 쓰인다. 생성 시점의
+    이름을 명령에 박지 않는다 — 그것이 칸마다 지도가 갈리던 원인이었다.
+    """
+    ros_block, overlay_block, cd_block = _env_blocks(term, ros_ws, fallback_map_id)
 
     note_block = "".join(
         f"printf '\\033[0;37m%s\\033[0m\\n' {shell_quote(line)}\n" for line in term.note
@@ -1245,6 +1390,257 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         precheck_block=precheck_block + guard_block,
         run_block=run_block,
     )
+
+
+# ---- systemd 사용자 유닛 (`--units`) -------------------------------------------------
+
+# ~/.bashrc 는 대화형이 아니면 첫머리(6~8행)에서 끝난다. 칸은 rc 가 ~/.bashrc 를 읽어
+# CUDA 경로와 로캘을 받았다. 유닛은 그 값을 여기서 직접 잡는다.
+NONINTERACTIVE_ENV_BLOCK = """\
+export PATH="$HOME/.local/bin:/usr/local/cuda-12.6/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/cuda-12.6/lib64:${LD_LIBRARY_PATH:-}"
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+# 화면(X)에 기대지 않는다. 로그인 전에 뜬 유닛과 뒤에 뜬 유닛의 환경이 같아야 한다.
+unset DISPLAY XAUTHORITY WAYLAND_DISPLAY
+"""
+
+# 끝나는 값을 세 가지로 가른다. systemd 는 프로세스가 살았는지만 안다 —
+#   0   멈추라는 신호(SIGINT)를 받고 끝났다. 정상 정지다.
+#   70  아무도 멈추라고 안 했는데 끝났다. 명령이 0 으로 끝났어도 유닛은 failed 여야 한다
+#       (can1 이 내려가 모터 노드가 조용히 끝난 경우가 그렇다).
+#   75  이미 떠 있어 거부했다. 유닛에 RestartPreventExitStatus=75 가 있어 다시 시도하지 않는다.
+# 신호는 유닛 묶음 전체에 가므로 명령도 같이 받는다. 셸은 명령이 끝난 뒤 trap 을 돈다.
+RUN_TEMPLATE = """\
+#!/bin/bash
+{mark} 가 다시 만든다. 직접 고치지 말 것.
+# 칸 [{title}] 을 터미널 없이 띄운다 (vica-{key}.service).
+# 끝나는 값: 0 멈추라는 신호를 받음 · 70 스스로 끝남 · 75 이미 떠 있어 거부
+trap 'VICA_STOPPING=1' INT TERM
+VICA_BIN="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/bin"
+{env_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}printf '실행: %s\\n' {command_q}
+{command}
+_vica_rc=$?
+[ -n "$VICA_STOPPING" ] && exit 0
+[ "$_vica_rc" = 0 ] && exit 70
+exit "$_vica_rc"
+"""
+
+UNIT_GUARD_BLOCK = """\
+vica_guard {names} || exit 75
+"""
+
+# 명령줄로 찾는 중복 검사. 실행 스크립트에만 넣는다(칸의 rc 는 그대로 둔다).
+# 정의는 쓰는 유닛이든 아니든 항상 넣는다 — 조건부로 넣다가 정의 없이 부르는 일이 없게.
+UNIT_HELPER_BLOCK = """\
+vica_guard_cmdline() {
+  local _pids
+  _pids=$(pgrep -f -- "$1" 2>/dev/null | grep -vx "$$")
+  if [ -n "$_pids" ]; then
+    printf '[중복] 이미 실행 중입니다 (명령줄 "%s"): pid %s\\n' "$1" "$(echo $_pids)"
+    [ -n "$VICA_FORCE" ] || return 1
+  fi
+  return 0
+}
+"""
+
+UNIT_GUARD_CMDLINE_BLOCK = """\
+vica_guard_cmdline {pattern_q} || exit 75
+"""
+
+TARGET_TITLES = {
+    "base": "기본 묶음 — 부팅 때 자동 기동",
+}
+
+
+def unit_name(key: str) -> str:
+    return f"vica-{key}.service"
+
+
+def run_name(key: str) -> str:
+    return f"run_{key}.sh"
+
+
+def render_run_script(key: str, term: Term, ros_ws: Path, fallback_map_id: str) -> str:
+    """유닛이 실행하는 스크립트. 칸의 rc 와 같은 환경 블록으로 같은 명령을 띄운다."""
+    unit = term.unit
+    ros_block, overlay_block, cd_block = _env_blocks(term, ros_ws, fallback_map_id)
+    command = unit.command or term.command
+
+    names = " ".join(f'"{n}"' for n in (*term.guard, *unit.guard))
+    guard_block = UNIT_GUARD_BLOCK.format(names=names) if names else ""
+    if unit.guard_cmdline:
+        guard_block += UNIT_GUARD_CMDLINE_BLOCK.format(
+            pattern_q=shell_quote(unit.guard_cmdline)
+        )
+
+    return RUN_TEMPLATE.format(
+        mark=GENERATED_MARK,
+        title=term.title,
+        key=key,
+        env_block=NONINTERACTIVE_ENV_BLOCK,
+        helper_block=HELPER_BLOCK + UNIT_HELPER_BLOCK,
+        ros_block=ros_block,
+        overlay_block=overlay_block,
+        cd_block=cd_block,
+        map_block=MAP_BLOCK if term.uses_map else "",
+        guard_block=guard_block,
+        command_q=shell_quote(command),
+        command=command,
+    )
+
+
+def render_unit(key: str, term: Term, rc_dir: Path) -> str:
+    """systemd 사용자 유닛 파일."""
+    unit = term.unit
+    bin_dir = rc_dir / "bin"
+
+    lines = [
+        f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
+        "[Unit]",
+        f"Description=VICA {term.title}",
+        # 묶음을 끄면 같이 꺼진다. 유닛끼리는 순서(After)만 건다.
+        f"PartOf=vica-{unit.bundle}.target",
+    ]
+    if unit.after:
+        lines.append("After=" + " ".join(unit_name(k) for k in unit.after))
+    lines += ["StartLimitIntervalSec=60", "StartLimitBurst=5", "", "[Service]", "Type=simple"]
+
+    waited = 0
+    for spec in unit.wait:
+        lines.append(f"ExecStartPre={bin_dir}/vica_wait.sh {spec}")
+        waited += int(spec.split()[-1])
+    # 기본 시작 시한(90초)이 대기를 끊지 않게 한다.
+    lines.append(f"TimeoutStartSec={waited + 30}")
+    lines.append(f"ExecStart={rc_dir}/{run_name(key)}")
+
+    if unit.stop_pattern:
+        # 먼저 실행 스크립트에 "멈추는 중"을 알리고(끝나는 값 0), 묶음 밖 프로세스를 내린다.
+        # 스크립트가 먼저 죽었을 때를 대비해 정지 뒤에도 한 번 더 치운다.
+        lines += [
+            "ExecStop=-/bin/kill -INT $MAINPID",
+            f'ExecStop={bin_dir}/vica_ctr_stop.sh "{unit.stop_pattern}" 10',
+            f'ExecStopPost={bin_dir}/vica_ctr_stop.sh "{unit.stop_pattern}" 3',
+        ]
+
+    lines += [
+        # 칸의 Ctrl+C 와 같다 — launch 와 노드가 함께 SIGINT 를 받는다. 시한 뒤에는 SIGKILL.
+        "KillMode=control-group",
+        "KillSignal=SIGINT",
+        f"TimeoutStopSec={unit.stop_sec}",
+        f"Restart={unit.restart}",
+        "RestartSec=3",
+        "RestartPreventExitStatus=75",
+        "UnsetEnvironment=DISPLAY XAUTHORITY WAYLAND_DISPLAY",
+        "Environment=PYTHONUNBUFFERED=1",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_target(bundle: str, keys: list[str]) -> str:
+    """묶음 target. 멤버를 Wants 로 당긴다 — 하나가 실패해도 나머지는 뜬다."""
+    return "\n".join(
+        [
+            f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
+            "[Unit]",
+            f"Description=VICA {TARGET_TITLES[bundle]}",
+            "Wants=" + " ".join(unit_name(k) for k in keys),
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ]
+    )
+
+
+def units_upto(terms: dict[str, Term], stage: str) -> dict[str, Term]:
+    """그 단계까지 켜는 유닛."""
+    if stage not in STAGES:
+        raise SystemExit(f"[오류] 모르는 단계 '{stage}'. 쓸 수 있는 단계: {', '.join(STAGES)}")
+    limit = STAGES.index(stage)
+    chosen = {
+        key: term
+        for key, term in terms.items()
+        if term.unit and STAGES.index(term.unit.stage) <= limit
+    }
+    for key, term in chosen.items():
+        for name in term.unit.after:
+            if name not in chosen:
+                raise SystemExit(
+                    f"[오류] 유닛 '{key}' 가 '{name}' 뒤에 뜨도록 돼 있는데,"
+                    f" 단계 {stage} 에는 '{name}' 유닛이 없다."
+                )
+    return chosen
+
+
+def _write_atomic(path: Path, text: str, mode: int = 0o644) -> None:
+    """새 파일을 만들어 바꿔 끼운다.
+
+    bash 는 스크립트를 실행하면서 읽는다. 유닛이 도는 중에 실행 스크립트를 제자리에서
+    덮어쓰면 뒷부분(끝나는 값 처리)을 바뀐 파일에서 읽어 문법 오류로 끝난다
+    (2026-11-14 실기). 바꿔 끼우면 도는 쪽은 옛 파일을 끝까지 읽는다.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.chmod(mode)
+    tmp.replace(path)
+
+
+def _is_generated(path: Path) -> bool:
+    try:
+        head = path.read_text(encoding="utf-8").splitlines()[:2]
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(line.startswith(GENERATED_MARK) for line in head)
+
+
+def write_units(
+    terms: dict[str, Term],
+    stage: str,
+    ros_ws: Path,
+    fallback_map_id: str,
+    rc_dir: Path,
+    systemd_dir: Path,
+) -> list[Path]:
+    """실행 스크립트 · 유닛 · target · 도우미 사본을 쓴다.
+
+    칸의 rc(`t_*.rc`)와 terminator config 는 건드리지 않는다. 손으로 고친 rc 가 있다.
+    단계를 내리면 그 위 단계의 유닛 파일은 지운다 — 이 스크립트가 만든 것만.
+    """
+    chosen = units_upto(terms, stage)
+    bin_dir = rc_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    for name in HELPER_SCRIPTS:
+        dest = bin_dir / name
+        _write_atomic(dest, (AUTOSTART_SRC / name).read_text(encoding="utf-8"), 0o755)
+        written.append(dest)
+
+    for key, term in chosen.items():
+        script = rc_dir / run_name(key)
+        _write_atomic(script, render_run_script(key, term, ros_ws, fallback_map_id), 0o755)
+        unit_file = systemd_dir / unit_name(key)
+        _write_atomic(unit_file, render_unit(key, term, rc_dir))
+        written += [script, unit_file]
+
+    for bundle in sorted({term.unit.bundle for term in chosen.values()}):
+        keys = [key for key, term in chosen.items() if term.unit.bundle == bundle]
+        target = systemd_dir / f"vica-{bundle}.target"
+        _write_atomic(target, render_target(bundle, keys))
+        written.append(target)
+
+    stale = [
+        *systemd_dir.glob("vica-*.service"),
+        *systemd_dir.glob("vica-*.target"),
+        *rc_dir.glob("run_*.sh"),
+    ]
+    for path in stale:
+        if path not in written and _is_generated(path):
+            path.unlink()
+
+    return written
 
 
 def check_rc(key: str, term: Term, text: str) -> None:
@@ -1441,7 +1837,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="rc 파일과 config 를 쓰지 않고 무엇을 만들지만 출력한다.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--units",
+        action="store_true",
+        help="칸 대신 systemd 사용자 유닛(자동 기동)을 만든다. rc 와 terminator config 는"
+        " 쓰지 않는다. --stage 가 필요하다.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=STAGES,
+        help="--units 로 켤 단계. 1a 바퀴 무관 · 1b 카메라 쪽 · 1c safety·motor(바퀴).",
+    )
+    args = parser.parse_args(argv)
+    if args.units and not args.stage:
+        # 단계를 안 적었다고 motor 까지 켜지면 안 된다.
+        parser.error(f"--units 에는 --stage 가 필요하다 ({', '.join(STAGES)})")
+    return args
 
 
 def print_profiles(terms: dict[str, Term]) -> None:
@@ -1473,7 +1884,7 @@ def main(argv: list[str] | None = None) -> int:
     # 보이면서 중복 실행 방지만 조용히 꺼진다 — 2026-08-12 에 motor·mission·app
     # 세 칸이 실제로 그 상태였다. 눈으로는 안 보이므로 여기서 막는다.
     for key, term in terms.items():
-        for name in term.guard:
+        for name in (*term.guard, *(term.unit.guard if term.unit else ())):
             if len(name) > 15:
                 print(
                     f"[오류] 칸 '{key}' 의 guard 이름이 15자를 넘는다: '{name}'"
@@ -1486,6 +1897,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         print_profiles(terms)
+        return 0
+
+    if args.units:
+        chosen = units_upto(terms, args.stage)
+        if args.dry_run:
+            print(f"단계 {args.stage} — 유닛 {len(chosen)}개 예정: {SYSTEMD_USER_DIR}")
+            for key, term in chosen.items():
+                print(f"  {unit_name(key):28s} {term.unit.stage}  Restart={term.unit.restart}")
+            print("(dry-run: 아무것도 쓰지 않았다)")
+            return 0
+        write_units(terms, args.stage, args.ros_ws, args.map_id, RC_DIR, SYSTEMD_USER_DIR)
+        print(f"단계 {args.stage} — 유닛 {len(chosen)}개: {SYSTEMD_USER_DIR}")
+        print(f"실행 스크립트 · 도우미: {RC_DIR}")
+        print("칸의 rc 와 terminator config 는 건드리지 않았다.")
+        print("적용:  systemctl --user daemon-reload && systemctl --user enable vica-base.target")
+        print("끄기:  systemctl --user disable --now vica-base.target")
         return 0
 
     selected = list(PROFILES) if args.profile == "all" else [args.profile]
