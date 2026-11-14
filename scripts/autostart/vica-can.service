@@ -1,0 +1,17 @@
+# VICA can1 부팅 설정 (system 유닛). scripts/autostart/install.sh 가 /etc/systemd/system 에 둔다.
+#
+# can1 장치가 나타나면 한 번 실행한다. 장치가 없으면 아무것도 기다리지 않는다 —
+# 부팅을 붙잡지 않으려고 장치 유닛에만 건다.
+# 정지 동작이 없다. 유닛을 꺼도 링크는 그대로다(링크를 내리면 드라이버 전원을 다시 넣어야 한다).
+[Unit]
+Description=VICA can1 설정 (bitrate 500000)
+BindsTo=sys-subsystem-net-devices-can1.device
+After=sys-subsystem-net-devices-can1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vica_can_up.sh can1
+
+[Install]
+WantedBy=sys-subsystem-net-devices-can1.device
