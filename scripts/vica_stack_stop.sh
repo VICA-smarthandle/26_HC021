@@ -27,6 +27,16 @@ send() {  # send <시그널> <pid...>
   [ $# -gt 0 ] && kill "-$sig" "$@" 2>/dev/null || true
 }
 
+# 자동 기동 유닛(2026-11-14)이 떠 있으면 묶음부터 내린다. 유닛을 두고 프로세스만 죽이면
+# Restart=on-failure 인 유닛(rosbridge·라이다 등)이 3초 뒤 되살아난다. 묶음 정지는 유닛마다
+# 정해 둔 절차(SIGINT, 컨테이너 안 프로세스 정리, motor 가 safety 보다 먼저)를 그대로 밟는다.
+# 지금만 내린다 — 다음 부팅에는 다시 뜬다. 아예 끄려면 맨 아래 안내를 따른다.
+units=$(systemctl --user list-units --plain --no-legend 'vica-*' 2>/dev/null | awk '{print $1}')
+if [ -n "$units" ]; then
+  echo "[0/4] 자동 기동 유닛 정지 ($(echo $units | wc -w)개)"
+  systemctl --user stop vica-drive.target vica-base.target $units 2>/dev/null || true
+fi
+
 echo "[1/4] 생존 프로세스 확인"
 alive="$(survivors)"
 if [ -z "$alive" ]; then
@@ -61,6 +71,7 @@ left="$(survivors)"
 if [ -z "$left" ]; then
   echo "정리 완료 — 0개. 터미네이터를 새로 띄워도 된다."
   echo "재기동 주의: ① can1 은 precheck 에 state UP 이면 건너뛴다."
+  [ -n "$units" ] && echo "자동 기동은 다음 부팅에 다시 뜬다. 끄려면: systemctl --user disable vica-base.target"
 else
   echo "안 죽는 프로세스가 남았다. 확인 후 최후수단으로 kill -9 <PID>:"
   echo "$left" | sed 's/^/  /'
