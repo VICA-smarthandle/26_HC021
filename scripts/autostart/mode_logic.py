@@ -6,7 +6,7 @@
     사실                       어디서
     유닛 상태                  systemctl --user show
     노드 프로세스 수           /proc/*/comm · cmdline (생성기가 쓴 units.json 의 guard)
-    Nav2 기동 단계             저널(이번 vica-nav2 호출)의 lifecycle_manager_navigation 줄
+    Nav2 기동 단계             저널(이번 vica-nav2 호출)의 lifecycle_manager_navigation·localization 줄
     safety 상태                /safety_state
     지도 그리기 상태           /vica/mapping_status
     움직이는 중                /vica/robot_state.is_moving
@@ -25,6 +25,8 @@ STARTUP_GRACE_SEC = 45.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _NAV = "[lifecycle_manager_navigation]:"
+_LOC = "[lifecycle_manager_localization]:"
+_FAILED = "Failed to bring up all requested nodes"
 
 
 @dataclass
@@ -74,22 +76,25 @@ def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
 def nav2_phase(lines: list[str]) -> str:
     """이번 vica-nav2 호출의 저널 줄에서 Nav2 기동 단계를 고른다.
 
-    lifecycle_manager_navigation 줄만 본다. collision_monitor 관리자는 launch 의 12초 재시도
-    때 늘 'Failed to bring up' 을 남기고, localization 관리자는 초기 위치 없이도 active 다.
+    active 는 lifecycle_manager_navigation 줄로만 판정한다(localization 관리자는 초기 위치
+    없이도 active 다). 중단은 navigation·localization 두 관리자를 본다 — 11-16 실기에서
+    map_server 응답 유실로 localization 이 먼저 중단됐는데 navigation 만 봐서 27 s 늦었다.
+    지도·위치가 없으면 못 움직이므로 중단이 active 보다 우선이다.
+    collision_monitor 관리자는 launch 의 12초 재시도 때 늘 'Failed to bring up' 을 남겨 뺀다.
     """
     active = aborted = pose = False
     for raw in lines:
         line = _ANSI.sub("", raw)
         if _NAV in line and "Managed nodes are active" in line:
             active = True
-        elif _NAV in line and "Failed to bring up all requested nodes" in line:
+        elif (_NAV in line or _LOC in line) and _FAILED in line:
             aborted = True
         elif "Please set the initial pose" in line:
             pose = True
-    if active:
-        return "active"
     if aborted:
         return "aborted"
+    if active:
+        return "active"
     if pose:
         return "waiting_pose"
     return "starting"
@@ -153,12 +158,15 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         "can_up": snap.can_up,
     }
 
-    drive_states = [_state(snap, e["unit"]) for e in drive.values()]
-    if target in ("active", "activating", "deactivating") or "deactivating" in drive_states:
+    drive_states = {k: _state(snap, e["unit"]) for k, e in drive.items()}
+    going_down = [k for k, st in drive_states.items() if st == "deactivating"]
+    if target in ("active", "activating", "deactivating") or going_down:
         status["mode"] = "drive"
         drive_failed = [k for k in failed if k in drive]
         drive_missing = [k for k in missing if k in drive]
-        if target == "deactivating" or "deactivating" in drive_states:
+        # 묶음 정지 때는 target 이 먼저 inactive 가 되고 멤버가 늦게 내려간다. target 이 active 인데
+        # 멤버만 내려가는 중이면 그 유닛을 다시 띄우는 중(자동 재시도·nav2_restart)이다.
+        if target == "deactivating" or (going_down and target != "active"):
             status["state"] = "stopping"
         elif drive_failed:
             status["state"] = "error"
@@ -166,14 +174,17 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         elif drive_missing:
             status["state"] = "error"
             status["detail"] = "노드가 없습니다: " + ", ".join(drive_missing)
+        elif going_down:
+            status["state"] = "starting"
+            status["detail"] = "다시 띄우는 중: " + ", ".join(sorted(going_down))
         elif snap.nav2_phase == "aborted" and not snap.auto_retried:
             status["state"] = "starting"
             status["detail"] = "Nav2 기동 중단 — 자동으로 한 번 다시 띄웁니다"
         elif snap.nav2_phase == "aborted":
             status["state"] = "error"
             status["detail"] = "Nav2 기동 실패(자동 재시도도 실패) — /vica/mode/nav2_restart 로 다시 띄웁니다"
-        elif (target == "activating" or "activating" in drive_states or snap.nav2_phase == "starting"
-              or any(k in drive for k in young)):
+        elif (target == "activating" or "activating" in drive_states.values()
+              or snap.nav2_phase == "starting" or any(k in drive for k in young)):
             status["state"] = "starting"
         elif snap.nav2_phase == "waiting_pose":
             status["state"] = "need_initial_pose"

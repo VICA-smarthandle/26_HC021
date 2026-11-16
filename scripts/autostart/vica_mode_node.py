@@ -39,7 +39,7 @@ import mode_logic as ml  # noqa: E402
 
 DEFAULT_MANIFEST = HERE.parent / "units.json"
 NAV2_UNIT = "vica-nav2.service"
-NAV2_JOURNAL_GREP = "lifecycle_manager_navigation|Please set the initial pose"
+NAV2_JOURNAL_GREP = "lifecycle_manager_(navigation|localization)|Please set the initial pose"
 CAN_FLAGS = Path("/sys/class/net/can1/flags")
 FRESH_SEC = 3.0
 SYSTEMCTL_TIMEOUT = 5.0
@@ -76,6 +76,10 @@ class ModeNode(Node):
         # 새로 올리면 값이 바뀌어 다시 한 번 쓸 수 있다. 노드가 다시 뜨면 잊는다 — 그때는 한 번 더.
         self.retried_for = None
         self.drive_entered = None
+        # 다시 띄우라고 한 Nav2 호출 ID. 그 호출이 내려가는 동안 저널에는 옛 '중단' 이 남아 있으므로
+        # 새 호출이 뜰 때까지 단계를 starting 으로 본다(11-16 실기: 재시도 직후 '재시도도 실패' 로 보임).
+        self.nav2_inv = None
+        self.replaced_inv = None
 
         latched = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -140,6 +144,8 @@ class ModeNode(Node):
         if units.get(NAV2_UNIT, ("inactive",))[0] not in ("active", "activating", "deactivating"):
             return "down"
         inv = invocations.get(NAV2_UNIT, "")
+        if inv and inv == self.replaced_inv:
+            return "starting"
         cached = self.nav2_cache
         now = time.monotonic()
         if cached and cached[0] == inv and (cached[1] in ("active", "aborted") or now - cached[2] < 2.0):
@@ -165,6 +171,7 @@ class ModeNode(Node):
         mono_us = time.monotonic() * 1e6   # systemd 의 ...Monotonic 과 같은 시계
         unit_age = {u: (mono_us - us) / 1e6 for u, us in entered.items()}
         self.drive_entered = entered.get(ml.DRIVE_TARGET)
+        self.nav2_inv = invocations.get(NAV2_UNIT)
         procs, hits = self.scan_processes()
         try:
             can_up = bool(int(CAN_FLAGS.read_text().strip(), 16) & 0x1)
@@ -190,12 +197,14 @@ class ModeNode(Node):
             if ml.should_auto_retry(snap):
                 # Nav2 기동 중단(bond·응답 유실) → Nav2 만 한 번 다시 띄운다(사용자 11-16).
                 self.retried_for = self.drive_entered
+                self.replaced_inv = self.nav2_inv
                 done = systemctl("restart", "--no-block", NAV2_UNIT)
                 self.get_logger().warn(
                     f"[자동 재시도] Nav2 기동 중단 → {NAV2_UNIT} 다시 띄움"
                     f" (rc={done.returncode}). 두 번째도 중단되면 사람에게 넘긴다."
                 )
                 snap.auto_retried = True
+                snap.nav2_phase = "starting"
             status = ml.derive_status(snap, self.manifest)
         except (OSError, subprocess.TimeoutExpired) as exc:
             status = {"mode": "unknown", "state": "error", "detail": f"상태를 읽지 못했습니다: {exc}"}
@@ -253,11 +262,16 @@ class ModeNode(Node):
         )
 
     def on_nav2_restart(self, _request, response):
-        return self.run(
-            response, ml.nav2_restart_refusal(self.collect()),
+        snap = self.collect()
+        inv = self.nav2_inv
+        response = self.run(
+            response, ml.nav2_restart_refusal(snap),
             ["restart", "--no-block", NAV2_UNIT],
             "Nav2 를 다시 띄웁니다. 초기 위치를 다시 잡아야 합니다.",
         )
+        if response.success:
+            self.replaced_inv = inv
+        return response
 
 
 def main() -> int:

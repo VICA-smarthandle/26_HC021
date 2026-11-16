@@ -120,6 +120,16 @@ class Nav2Phase(unittest.TestCase):
     def test_nothing_yet_is_starting(self):
         self.assertEqual(ml.nav2_phase([]), "starting")
 
+    def test_localization_abort_counts_as_an_abort(self):
+        # 11-16 실기: 위치추정 관리자가 먼저 중단했는데 주행 관리자만 봐서 27 s 늦게 알아챘다.
+        loc = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_localization")
+        self.assertEqual(ml.nav2_phase([self.POSE, loc]), "aborted")
+
+    def test_localization_abort_wins_over_navigation_active(self):
+        # 지도·위치추정이 없으면 주행 관리자가 active 여도 못 움직인다.
+        loc = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_localization")
+        self.assertEqual(ml.nav2_phase([self.ACTIVE, loc]), "aborted")
+
     def test_other_lifecycle_managers_do_not_count(self):
         # collision_monitor 관리자는 12초 재시도 때 늘 'Failed to bring up' 을 남긴다.
         other = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_collision_monitor")
@@ -290,6 +300,19 @@ class AutoRetry(unittest.TestCase):
         self.assertFalse(ml.should_auto_retry(idle_snapshot(nav2_phase="aborted")))
         for phase in ("starting", "waiting_pose", "active"):
             self.assertFalse(ml.should_auto_retry(snapshot(nav2_phase=phase)), phase)
+
+    def test_nav2_restarting_after_the_retry_is_still_starting(self):
+        # 다시 띄우는 동안 Nav2 유닛은 잠깐 deactivating 이다. 주행 묶음 전체를 내리는 것이 아니다.
+        snap = snapshot(nav2_phase="starting", auto_retried=True,
+                        units={"vica-nav2.service": ("deactivating", "stop-sigterm", "success")})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["state"], "starting")
+
+    def test_whole_bundle_going_down_is_stopping(self):
+        # 묶음 정지 때는 target 이 먼저 inactive 가 되고 Nav2 가 늦게 내려간다.
+        snap = snapshot(auto_retried=True,
+                        units={"vica-drive.target": ("inactive", "dead", "success"),
+                               "vica-nav2.service": ("deactivating", "stop-sigterm", "success")})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["state"], "stopping")
 
     def test_status_says_it_is_retrying_then_gives_up(self):
         first = ml.derive_status(snapshot(nav2_phase="aborted"), MANIFEST)

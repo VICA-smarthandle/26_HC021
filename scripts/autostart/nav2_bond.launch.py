@@ -17,6 +17,8 @@ use_sim_time·autostart·node_names 만 준다. SetParameter 는 이 묶음 안�
 
 인자: 바깥 launch 의 명령줄 인자는 안쪽 include 로 저절로 넘어가지 않는다(2026-11-16 실기 —
 "Included launch description missing required argument 'map'"). 여기서 선언하고 직접 넘긴다.
+시험용: 환경 변수 VICA_NAV2_BOND_TIMEOUT 이 있으면 그 값을 쓴다(자동 재시도를 실기로 확인하려고
+일부러 중단을 만들 때만). 없거나 숫자가 아니면 8 s.
 """
 import os
 
@@ -30,6 +32,13 @@ from launch_ros.actions import SetParameter
 BOND_TIMEOUT_SEC = 8.0
 
 
+def bond_timeout_sec(env=os.environ) -> float:
+    try:
+        return float(env.get("VICA_NAV2_BOND_TIMEOUT", BOND_TIMEOUT_SEC))
+    except ValueError:
+        return BOND_TIMEOUT_SEC
+
+
 def generate_launch_description() -> LaunchDescription:
     inner = os.path.join(
         get_package_share_directory("vica_nav2"), "launch", "nav2_map_test.launch.py"
@@ -40,7 +49,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_route", default_value="true"),
             GroupAction(
                 [
-                    SetParameter(name="bond_timeout", value=BOND_TIMEOUT_SEC),
+                    SetParameter(name="bond_timeout", value=bond_timeout_sec()),
                     IncludeLaunchDescription(
                         PythonLaunchDescriptionSource(inner),
                         launch_arguments={

@@ -545,9 +545,24 @@ class Nav2BondTimeout(unittest.TestCase):
     def test_wrapper_sets_bond_timeout_before_including_nav2(self):
         text = (g.AUTOSTART_SRC / "nav2_bond.launch.py").read_text(encoding="utf-8")
         self.assertIn("BOND_TIMEOUT_SEC = 8.0", text)
-        self.assertIn('SetParameter(name="bond_timeout", value=BOND_TIMEOUT_SEC)', text)
+        self.assertIn('SetParameter(name="bond_timeout", value=bond_timeout_sec())', text)
         self.assertLess(text.index("SetParameter(name="), text.index("IncludeLaunchDescription("))
         self.assertIn('"nav2_map_test.launch.py"', text)
+
+    def test_bond_timeout_can_be_overridden_only_by_an_explicit_variable(self):
+        # 자동 재시도를 실기로 확인하려면 일부러 중단을 만들어야 한다(시험 때만 아주 짧게).
+        # 변수가 없으면 8 s 그대로여야 한다.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "nav2_bond_wrapper", g.AUTOSTART_SRC / "nav2_bond.launch.py")
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except ImportError:
+            self.skipTest("launch 패키지 없음(ROS 환경 아님)")
+        self.assertEqual(mod.bond_timeout_sec({}), 8.0)
+        self.assertEqual(mod.bond_timeout_sec({"VICA_NAV2_BOND_TIMEOUT": "0.05"}), 0.05)
+        self.assertEqual(mod.bond_timeout_sec({"VICA_NAV2_BOND_TIMEOUT": "말도안됨"}), 8.0)
 
     def test_wrapper_forwards_the_map_and_route_arguments(self):
         # 2026-11-16 실기: 바깥 launch 의 명령줄 인자(map:=…)는 안쪽 include 로 저절로 넘어가지
