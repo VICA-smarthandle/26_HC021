@@ -142,14 +142,20 @@ class Installer(unittest.TestCase):
 
     def test_user_manager_may_raise_safety_priority(self):
         # safety·motor 실행 스크립트의 renice -10 은 사용자 관리자에 nice 한도가 있어야 된다
-        # (2026-11-16 사용자 결정 B). 관리자가 다시 뜰 때(재부팅) 적용된다 — 지금 restart 하면
-        # 사용자 유닛이 전부 내려간다.
+        # (2026-11-16 사용자 결정 B). user@.service 의 LimitNICE= 는 효과가 없었다 — 2026-11-16
+        # 재부팅 뒤 systemctl show 는 30 인데 관리자 프로세스는 0. 관리자를 띄우는 PAM
+        # (/usr/lib/pam.d/systemd-user 의 pam_limits)이 덮는다. 그래서 limits.d 에 둔다.
         text = INSTALL.read_text(encoding="utf-8")
-        self.assertIn("LimitNICE=-10", text)
-        self.assertIn('/etc/systemd/system/user@${ROBOT_UID}.service.d', text)
+        self.assertIn("/etc/security/limits.d/vica-nice.conf", text)
+        line = next(l for l in text.splitlines() if "limits.d/vica-nice.conf" in l and "printf" in l)
+        made = subprocess.run(["bash", "-c", "ROBOT_USER=ji_w; " + line.split(" > ")[0]],
+                              capture_output=True, text=True).stdout
+        self.assertEqual(made.split(), ["ji_w", "-", "nice", "-10"])
         self.assertNotIn("restart user@", text)
+        # 효과 없던 앞 판의 drop-in 은 지운다(남아 있으면 systemctl show 가 30 이라 헷갈린다).
+        self.assertIn("rm -f \"/etc/systemd/system/user@${ROBOT_UID}.service.d/vica-nice.conf\"", text)
         undo = (AUTOSTART / "uninstall.sh").read_text(encoding="utf-8")
-        self.assertIn("vica-nice.conf", undo)
+        self.assertIn("/etc/security/limits.d/vica-nice.conf", undo)
 
     def test_installer_never_turns_autostart_on(self):
         # 자동 기동 켜기·끄기는 사용자 유닛(vica-base.target) 몫이다(11-14 사용자 "우선 꺼주세요").

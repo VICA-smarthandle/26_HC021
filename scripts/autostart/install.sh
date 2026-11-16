@@ -6,7 +6,7 @@
 #   1. can1 부팅 설정   vica-can.service (다음 부팅부터. 지금 링크 상태는 바꾸지 않는다)
 #   2. linger           로그인하지 않아도 부팅 직후 사용자 유닛이 뜬다
 #   3. 저널 보존        /var/log/journal (지금은 재부팅하면 로그가 사라진다), 상한 1G
-#   4. nice 한도        사용자 유닛이 nice -10 까지 올릴 수 있게(safety·motor 만 쓴다). 재부팅 뒤 적용
+#   4. nice 한도        ji_w 프로세스가 nice -10 까지 올릴 수 있게(safety·motor 만 쓴다). 재부팅 뒤 적용
 #
 # 되돌리기: sudo bash scripts/autostart/uninstall.sh
 set -eu
@@ -37,12 +37,15 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=1G\n' \
 systemd-tmpfiles --create --prefix /var/log/journal
 systemctl restart systemd-journald
 
-echo "[4/4] nice 한도 (user@${ROBOT_UID})"
+echo "[4/4] nice 한도 ($ROBOT_USER)"
 # safety·motor 실행 스크립트가 renice -10 으로 다른 노드보다 CPU 를 먼저 받는다(2026-11-16).
 # 주행 묶음 기동 40 s 동안 8코어가 100 % 라 safety 출력이 p99 154 ms 로 늘었다.
-# 사용자 관리자가 다시 뜰 때(재부팅) 적용된다. 지금 관리자를 restart 하면 사용자 유닛이 전부 내려간다.
-mkdir -p "/etc/systemd/system/user@${ROBOT_UID}.service.d"
-printf '[Service]\nLimitNICE=-10\n' > "/etc/systemd/system/user@${ROBOT_UID}.service.d/vica-nice.conf"
+# user@.service 의 LimitNICE= 는 효과가 없었다 — 관리자를 띄우는 PAM(pam_limits)이 덮는다
+# (2026-11-16 재부팅 뒤 관리자 Max nice 0). 그래서 pam_limits 가 읽는 limits.d 에 둔다.
+# 다음 로그인·재부팅부터 적용된다. 지금 관리자를 restart 하면 사용자 유닛이 전부 내려간다.
+printf '%s  -  nice  -10\n' "$ROBOT_USER" > /etc/security/limits.d/vica-nice.conf
+rm -f "/etc/systemd/system/user@${ROBOT_UID}.service.d/vica-nice.conf"
+rmdir "/etc/systemd/system/user@${ROBOT_UID}.service.d" 2>/dev/null || true
 systemctl daemon-reload
 echo "      다음 부팅부터 적용됩니다."
 
