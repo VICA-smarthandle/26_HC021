@@ -140,6 +140,22 @@ class Installer(unittest.TestCase):
         self.assertNotIn("--now", text)
         self.assertNotIn("systemctl start vica-can", text)
 
+    def test_user_manager_may_raise_safety_priority(self):
+        # safety·motor 실행 스크립트의 renice -10 은 사용자 관리자에 nice 한도가 있어야 된다
+        # (2026-11-16 사용자 결정 B). 관리자가 다시 뜰 때(재부팅) 적용된다 — 지금 restart 하면
+        # 사용자 유닛이 전부 내려간다.
+        text = INSTALL.read_text(encoding="utf-8")
+        self.assertIn("LimitNICE=-10", text)
+        self.assertIn('/etc/systemd/system/user@${ROBOT_UID}.service.d', text)
+        self.assertNotIn("restart user@", text)
+        undo = (AUTOSTART / "uninstall.sh").read_text(encoding="utf-8")
+        self.assertIn("vica-nice.conf", undo)
+
+    def test_installer_never_turns_autostart_on(self):
+        # 자동 기동 켜기·끄기는 사용자 유닛(vica-base.target) 몫이다(11-14 사용자 "우선 꺼주세요").
+        text = INSTALL.read_text(encoding="utf-8")
+        self.assertNotIn("vica-base.target", text.replace("# ", "").split("설치 끝")[0])
+
 
 if __name__ == "__main__":
     unittest.main()

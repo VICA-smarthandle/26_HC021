@@ -430,6 +430,46 @@ class SafetyOverUdpOnly(unittest.TestCase):
         self.assertTrue((tmp / "rc" / "bin" / "fastdds_udp_only.xml").is_file())
 
 
+class SafetyFirstPriority(unittest.TestCase):
+    """safety·motor 는 다른 노드보다 CPU 를 먼저 받는다(사용자 11-16 B).
+
+    주행 묶음 기동 40 s 동안 8코어가 100 % 가 되어 safety 출력이 24.8 Hz·p99 154 ms·최대 320 ms
+    로 늘었다(~/vica_data/autostart_tests/2026-11-16_safety_rate/RESULT.md). 모터는 0.5 s 넘게
+    /cmd_vel_safe 가 없으면 끊는다.
+    """
+
+    RENICE = "renice -n -10 -p $$"
+
+    def setUp(self):
+        self.terms = g.build_terms()
+
+    def test_safety_and_motor_raise_their_priority(self):
+        for key in ("safety", "motor"):
+            self.assertIn(self.RENICE, run_script(key, self.terms[key]), key)
+
+    def test_no_other_unit_changes_priority(self):
+        for key, term in unit_terms().items():
+            if key not in ("safety", "motor"):
+                self.assertNotIn("renice", run_script(key, term), key)
+
+    def test_priority_is_set_after_the_guard_and_before_the_nodes(self):
+        text = run_script("safety", self.terms["safety"])
+        self.assertLess(text.index("vica_guard "), text.index(self.RENICE))
+        self.assertLess(text.index(self.RENICE), text.index("ros2 launch vica_safety"))
+
+    def test_a_refused_priority_still_starts_safety(self):
+        # 권한(user@1000 LimitNICE)이 없으면 renice 가 실패한다. 그래도 safety 는 떠야 한다 —
+        # 유닛 파일의 Nice= 는 실패하면 유닛이 아예 안 뜨므로 쓰지 않는다.
+        text = run_script("safety", self.terms["safety"])
+        line = next(l for l in text.splitlines() if self.RENICE in l)
+        self.assertNotIn("exit", line)
+        self.assertIn("if ", line)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        unit = g.render_unit("safety", self.terms["safety"], tmp)
+        self.assertNotIn("Nice=", unit)
+
+
 class DiscoveryServer(unittest.TestCase):
     """--discovery-server: 노드들이 서로를 직접 찾지 않고 서버 하나를 거쳐 찾는다.
 

@@ -158,6 +158,7 @@ class Unit:
         dds_udp_only: bool = False,
         discovery_only: bool = False,
         super_client: bool = False,
+        nice: int | None = None,
     ) -> None:
         # 이 유닛이 묶음에 들어오는 단계(STAGES).
         self.stage = stage
@@ -193,6 +194,10 @@ class Unit:
         # --discovery-server 일 때 전체 노드 목록을 받는다(fastdds_super_client.xml).
         # 서버는 같은 토픽을 쓰는 노드끼리만 짝지으므로 rosapi·상태 감시는 이것이 필요하다.
         self.super_client = super_client
+        # 실행 스크립트가 노드를 띄우기 전에 자기 nice 를 이 값으로 바꾼다. safety·motor 만 −10 —
+        # 주행 묶음 기동 40 s 동안 8코어가 100 % 라 safety 출력이 p99 154 ms·최대 320 ms 로
+        # 늘었다(2026-11-16, 사용자 결정 B). 음수는 user@1000 의 LimitNICE 가 있어야 된다.
+        self.nice = nice
 
 
 class Term:
@@ -331,7 +336,7 @@ def build_terms() -> dict[str, Term]:
             # 죽으면 자동으로 다시 띄우지 않는다 — safety 없이는 아무것도 안 움직이고, 사람이 본다.
             unit=Unit(
                 stage="1c", restart="no", wait=("path /sys/class/net/can1 90",),
-                dds_udp_only=True,
+                dds_udp_only=True, nice=-10,
             ),
                     guard=("emergency_stop_", "safety_supervis", "app_emergency_n",),
 ),
@@ -354,7 +359,7 @@ def build_terms() -> dict[str, Term]:
             unit=Unit(
                 stage="1c", restart="no", after=("safety",),
                 wait=("canup can1 90", "proc safety_supervis 60"),
-                dds_udp_only=True,
+                dds_udp_only=True, nice=-10,
             ),
                     guard=("mdrobot_can_ke", "keyboard_knob",),
             cpp_overlay=CPP_MOTOR,
@@ -1495,7 +1500,7 @@ RUN_TEMPLATE = """\
 # 끝나는 값: 0 멈추라는 신호를 받음 · 70 스스로 끝남 · 75 이미 떠 있어 거부
 trap 'VICA_STOPPING=1' INT TERM
 VICA_BIN="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/bin"
-{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}printf '실행: %s\\n' {command_q}
+{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}{nice_block}printf '실행: %s\\n' {command_q}
 {command}
 _vica_rc=$?
 [ -n "$VICA_STOPPING" ] && exit 0
@@ -1506,6 +1511,13 @@ exit "$_vica_rc"
 DDS_UDP_ONLY_BLOCK = """\
 # 공유메모리 없이 UDP 만. 끝난 프로세스의 공유메모리 잠금에 safety 가 멈추지 않게(2026-11-14).
 export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_udp_only.xml"
+"""
+
+# 유닛 파일의 Nice= 를 쓰지 않는다 — 권한이 없으면 유닛이 아예 안 뜬다. safety 는 우선순위를
+# 못 올려도 떠야 한다.
+NICE_BLOCK = """\
+# 다른 노드보다 CPU 를 먼저 받는다(2026-11-16). 권한이 없으면 경고만 남기고 기본 우선순위로 띄운다.
+if renice -n {nice} -p $$ >/dev/null 2>&1; then printf '우선순위: nice {nice}\\n'; else printf '[경고] nice {nice} 실패 — 기본 우선순위로 띄운다(user@1000 LimitNICE 확인)\\n' >&2; fi
 """
 
 DISCOVERY_CLIENT_BLOCK = """\
@@ -1591,6 +1603,7 @@ def render_run_script(
         cd_block=cd_block,
         map_block=MAP_BLOCK if term.uses_map else "",
         guard_block=guard_block,
+        nice_block=NICE_BLOCK.format(nice=unit.nice) if unit.nice is not None else "",
         command_q=shell_quote(command),
         command=command,
     )
