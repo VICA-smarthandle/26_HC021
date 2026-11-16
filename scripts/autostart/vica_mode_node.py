@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -42,6 +43,10 @@ import mode_logic as ml  # noqa: E402
 DEFAULT_MANIFEST = HERE.parent / "units.json"
 # 음성 유닛(vica-llm)이 기동 때 읽는 파일. 생성기 VOICE_MODE_FILE 과 같은 곳.
 VOICE_MODE_PATH = HERE.parent / "voice_mode"
+# 음성 연결 알림(사용자 11-16)에 쓰는 저널 줄만 고른다. 판정은 ml.VoiceEventTracker.
+VOICE_JOURNAL_GREP = "음성: |\\[LLM\\]|LLM 워밍업|Realtime 연결 예열"
+# 같은 알림(예: 말마다 나는 실패)은 이 안에 한 번만.
+VOICE_EVENT_REPEAT_SEC = 60.0
 NAV2_UNIT = ml.NAV2_UNIT
 NAV2_JOURNAL_GREP = "lifecycle_manager_(navigation|localization)|Please set the initial pose"
 CAN_FLAGS = Path("/sys/class/net/can1/flags")
@@ -84,6 +89,15 @@ class ModeNode(Node):
         # 새 호출이 뜰 때까지 단계를 starting 으로 본다(11-16 실기: 재시도 직후 '재시도도 실패' 로 보임).
         self.nav2_inv = None
         self.replaced_inv = None
+        # 음성 연결 알림. 노드가 뜨기 전 일은 상태만 맞추고 알리지 않는다(다시 떠도 지난 알림이 안 온다).
+        self.started_wall = time.time()
+        self.invocations: dict[str, str] = {}
+        self.voice_inv: str | None = None
+        self.voice_cursor: str | None = None
+        self.voice_tracker = ml.VoiceEventTracker()
+        self.voice_events: collections.deque = collections.deque(maxlen=20)
+        self.voice_event_id = 0
+        self.voice_last_kind_at: dict[str, float] = {}
         # 미뤄 둔 정지 요청을 받은 시각(time.monotonic). 기동 중 정지는 Nav2 가 다 뜬 뒤 내린다(사용자 11-16).
         self.stop_pending_since: float | None = None
         self.drive_units = [e["unit"] for e in self.manifest.values() if e["bundle"] == "drive"]
@@ -192,6 +206,7 @@ class ModeNode(Node):
                       if units.get(u, ("",))[0] == "deactivating" and u in exited]
         self.drive_entered = entered.get(ml.DRIVE_TARGET)
         self.nav2_inv = invocations.get(NAV2_UNIT)
+        self.invocations = invocations
         procs, hits = self.scan_processes()
         try:
             can_up = bool(int(CAN_FLAGS.read_text().strip(), 16) & 0x1)
@@ -239,6 +254,9 @@ class ModeNode(Node):
                 snap.auto_retried = True
                 snap.nav2_phase = "starting"
             status = ml.derive_status(snap, self.manifest)
+            self.poll_voice()
+            status["voice_events"] = list(self.voice_events)[-5:]
+            status["voice_events_epoch"] = self.started_wall
         except (OSError, subprocess.TimeoutExpired) as exc:
             status = {"mode": "unknown", "state": "error", "detail": f"상태를 읽지 못했습니다: {exc}"}
         status["timestamp"] = time.time()
@@ -314,6 +332,45 @@ class ModeNode(Node):
             ["stop", "--no-block", ml.DRIVE_TARGET],
             "주행 묶음을 내립니다(기본 묶음은 그대로).",
         )
+
+    def poll_voice(self) -> None:
+        """음성 유닛의 이번 기동 저널에서 새 줄만 읽어 연결 알림을 만든다."""
+        unit = self.manifest.get("llm", {}).get("unit")
+        inv = self.invocations.get(unit, "") if unit else ""
+        if not inv:
+            return
+        if inv != self.voice_inv:
+            self.voice_inv, self.voice_cursor = inv, None
+            self.voice_tracker = ml.VoiceEventTracker()
+        args = ["journalctl", "--user", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "short-unix",
+                "--no-pager", "--show-cursor", "-g", VOICE_JOURNAL_GREP]
+        if self.voice_cursor:
+            args.append(f"--after-cursor={self.voice_cursor}")
+        try:
+            lines = subprocess.run(args, capture_output=True, text=True,
+                                   timeout=SYSTEMCTL_TIMEOUT).stdout.splitlines()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        for line in lines:
+            if line.startswith("-- cursor: "):
+                self.voice_cursor = line[len("-- cursor: "):].strip()
+                continue
+            stamp, _, rest = line.partition(" ")
+            try:
+                at = float(stamp)
+            except ValueError:
+                continue
+            message = rest.split(": ", 1)[1] if ": " in rest else rest
+            for kind, text in self.voice_tracker.feed(message):
+                if at < self.started_wall - 1.0:
+                    continue
+                last = self.voice_last_kind_at.get(kind)
+                if last is not None and at - last < VOICE_EVENT_REPEAT_SEC:
+                    continue
+                self.voice_last_kind_at[kind] = at
+                self.voice_event_id += 1
+                self.voice_events.append({"id": self.voice_event_id, "at": at, "kind": kind, "text": text})
+                self.get_logger().info(f"[음성 알림] {text}")
 
     def voice_mode(self) -> str:
         try:

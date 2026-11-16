@@ -507,3 +507,73 @@ class CmdlineScan(unittest.TestCase):
         self.assertTrue(ml.needs_cmdline("ros2"))
         self.assertTrue(ml.needs_cmdline("python3"))
         self.assertFalse(ml.needs_cmdline("controller_serv"))
+
+
+class VoiceEvents(unittest.TestCase):
+    """음성 연결 알림(사용자 11-16): 외부 API·로컬 API 연결 성공/실패를 앱에 알린다.
+    음성 코드는 고치지 않고 음성 유닛 저널 줄을 읽는다(vica-voice-llm src/llm_backend.py·
+    langchain_intent_parser.py·ros_node.py 의 문구, 2026-11-16 확인)."""
+
+    def run_lines(self, lines):
+        tracker = ml.VoiceEventTracker()
+        events = []
+        for line in lines:
+            events.extend(tracker.feed(line))
+        return [kind for kind, _text in events]
+
+    def test_online_warmup_without_failure_is_external_success(self):
+        self.assertEqual(self.run_lines(["음성: online", "[INFO] [x] [vica_llm_intent_node]: LLM 워밍업 완료 (3.2초)"]),
+                         ["external_ok"])
+
+    def test_offline_warmup_without_failure_is_local_success(self):
+        self.assertEqual(self.run_lines(["음성: offline", "... LLM 워밍업 완료 (9.0초)"]), ["local_ok"])
+
+    def test_warmup_done_after_a_failed_call_is_not_a_success(self):
+        # 11-16 17:36 실기: 로컬 첫 호출이 timed out 인데도 '워밍업 완료' 가 찍혔다.
+        self.assertEqual(self.run_lines([
+            "음성: offline",
+            "[vica_llm-1] [ERROR] [LLM] 호출 실패(클라우드만, 폴백 꺼짐): timed out",
+            "... LLM 워밍업 완료 (15.1초)",
+        ]), ["local_fail"])
+
+    def test_cloud_failure_with_fallback_is_a_switch_to_local(self):
+        self.assertEqual(self.run_lines([
+            "음성: online",
+            "[LLM] 클라우드 실패(timeout: timed out) → 로컬(midm2-mini)로 대피. 같은 발화 재처리",
+        ]), ["external_fallback"])
+
+    def test_failure_without_fallback_depends_on_the_mode(self):
+        line = "[LLM] 호출 실패(클라우드만, 폴백 꺼짐): Connection error."
+        self.assertEqual(self.run_lines(["음성: online", line]), ["external_fail"])
+        self.assertEqual(self.run_lines(["음성: offline", line]), ["local_fail"])
+
+    def test_both_failing(self):
+        self.assertEqual(self.run_lines(["음성: online", "[LLM] 호출 실패(로컬까지): refused"]), ["both_fail"])
+
+    def test_realtime_and_recovery_and_auth(self):
+        self.assertEqual(self.run_lines([
+            "음성: online",
+            "Realtime 연결 예열 실패(무시 가능): 401",
+            "[LLM] Realtime 연결 오류 → 클라우드 건너뛰고 로컬(midm2-mini)로",
+            "[LLM] 클라우드는 닿지만 인증 실패 — 키를 확인하세요. 복귀 보류",
+            "[LLM] 주행 끝 → 클라우드 복귀",
+        ]), ["realtime_fail", "external_fallback", "external_auth", "external_back"])
+
+    def test_texts_say_external_or_local_api(self):
+        tracker = ml.VoiceEventTracker()
+        tracker.feed("음성: online")
+        (kind, text), = tracker.feed("LLM 워밍업 완료 (1.0초)")
+        self.assertEqual(text, "외부 API 연결 성공")
+        tracker = ml.VoiceEventTracker()
+        tracker.feed("음성: offline")
+        (kind, text), = tracker.feed("[LLM] 호출 실패(클라우드만, 폴백 꺼짐): timed out")
+        self.assertTrue(text.startswith("로컬 API 연결 실패"), text)
+
+    def test_a_new_start_resets_the_failure_memory(self):
+        self.assertEqual(self.run_lines([
+            "음성: offline", "[LLM] 호출 실패(클라우드만, 폴백 꺼짐): timed out",
+            "음성: online", "LLM 워밍업 완료 (2.0초)",
+        ]), ["local_fail", "external_ok"])
+
+    def test_unrelated_lines_are_ignored(self):
+        self.assertEqual(self.run_lines(["음성: online", "[vica_tts-2] 고정 문장 워밍업 완료: 39건"]), [])

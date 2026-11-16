@@ -352,6 +352,74 @@ def voice_switch_refusal(snap: Snapshot) -> str | None:
     return None
 
 
+class VoiceEventTracker:
+    """음성 유닛 저널 줄에서 연결 알림을 가린다(사용자 11-16: 외부 API·로컬 API 연결 성공/실패).
+
+    음성 코드는 고치지 않는다. 기댄 문구(vica-voice-llm, 2026-11-16):
+      run_llm.sh                   '음성: online|offline'   — 유닛이 기동 때 찍는다(어느 모드인지)
+      ros_node.py                  'LLM 워밍업 완료' · 'LLM 워밍업 실패' · 'Realtime 연결 예열 실패'
+      langchain_intent_parser.py   '[LLM] 호출 실패(클라우드만, 폴백 꺼짐)' · '(로컬까지)' · '로컬 백엔드 준비 실패'
+      llm_backend.py               '클라우드 실패(… → 로컬(…)로 대피' · '클라우드 건너뛰고 로컬' ·
+                                   '인증 실패' · '→ 클라우드 복귀'
+    성공은 따로 찍히지 않는다. 기동 뒤 실패 줄 없이 '워밍업 완료' 가 오면 성공으로 본다 — 워밍업 호출이
+    실패해도 '완료' 는 찍힌다(11-16 17:36 로컬 기동: timed out 뒤 '워밍업 완료 (15.1초)').
+    로컬 모드(⑬)는 Ollama 가 주 백엔드라 '클라우드만' 실패도 로컬 실패다.
+    """
+
+    TEXTS = {
+        "external_ok": "외부 API 연결 성공",
+        "external_fail": "외부 API 연결 실패",
+        "external_fallback": "외부 API 연결 실패 → 로컬 API 로 전환",
+        "external_back": "외부 API 연결 복귀",
+        "external_auth": "외부 API 인증 실패 — 키를 확인하세요",
+        "realtime_fail": "외부 API(Realtime) 연결 실패",
+        "local_ok": "로컬 API 연결 성공",
+        "local_fail": "로컬 API 연결 실패",
+        "both_fail": "외부 API·로컬 API 모두 연결 실패",
+    }
+
+    def __init__(self) -> None:
+        self.mode = "offline"
+        self.failed = False
+
+    def _event(self, kind: str, detail: str = "") -> list[tuple[str, str]]:
+        text = self.TEXTS[kind]
+        if detail:
+            text += f" ({detail.strip()[:80]})"
+        return [(kind, text)]
+
+    def feed(self, raw: str) -> list[tuple[str, str]]:
+        line = _ANSI.sub("", raw)
+        if "음성: online" in line or "음성: offline" in line:
+            self.mode = "online" if "음성: online" in line else "offline"
+            self.failed = False
+            return []
+        online = self.mode == "online"
+        if "[LLM] 클라우드 실패(" in line:
+            self.failed = True
+            return self._event("external_fallback")
+        if "[LLM] 호출 실패(로컬까지)" in line:
+            self.failed = True
+            return self._event("both_fail", line.split("):", 1)[-1] if "):" in line else "")
+        if "[LLM] 호출 실패(클라우드만" in line or "LLM 워밍업 실패" in line:
+            self.failed = True
+            detail = line.split(":", 1)[-1] if "LLM 워밍업 실패" in line else line.split("):", 1)[-1]
+            return self._event("external_fail" if online else "local_fail", detail)
+        if "[LLM] 로컬 백엔드 준비 실패" in line:
+            return self._event("local_fail", "준비 실패")
+        if "Realtime 연결 예열 실패" in line:
+            return self._event("realtime_fail")
+        if "클라우드 건너뛰고 로컬" in line:
+            return self._event("external_fallback", "Realtime 연결 오류")
+        if "클라우드는 닿지만 인증 실패" in line:
+            return self._event("external_auth")
+        if "→ 클라우드 복귀" in line:
+            return self._event("external_back")
+        if "LLM 워밍업 완료" in line and not self.failed:
+            return self._event("external_ok" if online else "local_ok")
+        return []
+
+
 def nav2_restart_refusal(snap: Snapshot) -> str | None:
     if _state(snap, DRIVE_TARGET) != "active":
         return "주행 모드가 아닙니다."
