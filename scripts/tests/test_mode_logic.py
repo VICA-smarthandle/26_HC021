@@ -130,6 +130,18 @@ class Nav2Phase(unittest.TestCase):
         loc = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_localization")
         self.assertEqual(ml.nav2_phase([self.ACTIVE, loc]), "aborted")
 
+    def test_no_progress_for_too_long_is_stalled(self):
+        # 11-16 10:09 실기: map_server 응답 유실 뒤 실패 줄 없이 189 s 멈췄다. 정상은 8~20 s 에
+        # '초기 위치' 줄이 나온다.
+        self.assertEqual(ml.nav2_phase([], age_sec=ml.NAV2_STALL_SEC), "stalled")
+        self.assertEqual(ml.nav2_phase([], age_sec=ml.NAV2_STALL_SEC - 1), "starting")
+        self.assertEqual(ml.nav2_phase([]), "starting")
+
+    def test_waiting_for_the_pose_is_not_stalled(self):
+        # 초기 위치는 사람이 잡는다. 몇 분이 걸려도 멈춘 것이 아니다.
+        self.assertEqual(ml.nav2_phase([self.POSE], age_sec=600), "waiting_pose")
+        self.assertEqual(ml.nav2_phase([self.ABORT], age_sec=600), "aborted")
+
     def test_other_lifecycle_managers_do_not_count(self):
         # collision_monitor 관리자는 12초 재시도 때 늘 'Failed to bring up' 을 남긴다.
         other = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_collision_monitor")
@@ -300,6 +312,22 @@ class AutoRetry(unittest.TestCase):
         self.assertFalse(ml.should_auto_retry(idle_snapshot(nav2_phase="aborted")))
         for phase in ("starting", "waiting_pose", "active"):
             self.assertFalse(ml.should_auto_retry(snapshot(nav2_phase=phase)), phase)
+
+    def test_retries_a_stalled_bringup_once(self):
+        self.assertTrue(ml.should_auto_retry(snapshot(nav2_phase="stalled")))
+        self.assertFalse(ml.should_auto_retry(snapshot(nav2_phase="stalled", auto_retried=True)))
+        first = ml.derive_status(snapshot(nav2_phase="stalled"), MANIFEST)
+        self.assertEqual(first["state"], "starting")
+        self.assertIn("자동", first["detail"])
+        second = ml.derive_status(snapshot(nav2_phase="stalled", auto_retried=True), MANIFEST)
+        self.assertEqual(second["state"], "error")
+
+    def test_not_while_nav2_is_being_stopped_by_hand(self):
+        # 개발하려고 Nav2 유닛만 내리면 내려가는 동안 '중단' 줄이 남는다. 그때 다시 띄우면
+        # 칸에서 띄운 Nav2 와 두 벌이 된다.
+        for st in ("deactivating", "inactive", "failed"):
+            snap = snapshot(nav2_phase="aborted", units={"vica-nav2.service": (st, "x", "success")})
+            self.assertFalse(ml.should_auto_retry(snap), st)
 
     def test_nav2_restarting_after_the_retry_is_still_starting(self):
         # 다시 띄우는 동안 Nav2 유닛은 잠깐 deactivating 이다. 주행 묶음 전체를 내리는 것이 아니다.

@@ -17,11 +17,17 @@ import re
 from dataclasses import dataclass, field
 
 DRIVE_TARGET = "vica-drive.target"
+NAV2_UNIT = "vica-nav2.service"
 BASE_TARGET = "vica-base.target"
 MAPPING_IDLE = ("idle", "", None)
 # 유닛이 active 가 된 뒤 노드가 다 뜰 때까지의 유예. 2026-11-14 실기에서 미션·감시가 18 s 걸렸다.
 # 그 사이 노드가 없다고 error 로 보이지 않게 한다.
 STARTUP_GRACE_SEC = 45.0
+# Nav2 유닛이 active 가 된 뒤 이만큼 지나도 '초기 위치' 줄·중단·active 가 하나도 없으면 멈춘 기동으로
+# 본다(사용자 11-16, 90 s). 정상 기동 40회(11-14·16)는 위치추정이 8~20 s 에 '초기 위치' 줄을 냈다.
+# 11-16 10:09 회차는 map_server 응답 유실('failed to send response to /map_server/change_state')
+# 뒤 관리자가 실패 줄 없이 189 s 멈췄다 — Humble lifecycle_manager 는 응답을 시한 없이 기다린다.
+NAV2_STALL_SEC = 90.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _NAV = "[lifecycle_manager_navigation]:"
@@ -37,7 +43,7 @@ class Snapshot:
     procs: dict[str, int]
     # 명령줄 패턴 → 프로세스 수
     cmdline_hits: dict[str, int] = field(default_factory=dict)
-    # starting · waiting_pose · active · aborted · down
+    # starting · waiting_pose · active · aborted · stalled · down
     nav2_phase: str = "down"
     # /safety_state 값. 최근에 못 받았으면 None
     safety_state: str | None = None
@@ -73,7 +79,7 @@ def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
     return units, invocations, entered
 
 
-def nav2_phase(lines: list[str]) -> str:
+def nav2_phase(lines: list[str], age_sec: float | None = None) -> str:
     """이번 vica-nav2 호출의 저널 줄에서 Nav2 기동 단계를 고른다.
 
     active 는 lifecycle_manager_navigation 줄로만 판정한다(localization 관리자는 초기 위치
@@ -81,6 +87,7 @@ def nav2_phase(lines: list[str]) -> str:
     map_server 응답 유실로 localization 이 먼저 중단됐는데 navigation 만 봐서 27 s 늦었다.
     지도·위치가 없으면 못 움직이므로 중단이 active 보다 우선이다.
     collision_monitor 관리자는 launch 의 12초 재시도 때 늘 'Failed to bring up' 을 남겨 뺀다.
+    age_sec 는 Nav2 유닛이 active 가 된 뒤 지난 초. 모르면 멈춤 판정을 하지 않는다.
     """
     active = aborted = pose = False
     for raw in lines:
@@ -97,6 +104,8 @@ def nav2_phase(lines: list[str]) -> str:
         return "active"
     if pose:
         return "waiting_pose"
+    if age_sec is not None and age_sec >= NAV2_STALL_SEC:
+        return "stalled"
     return "starting"
 
 
@@ -177,12 +186,15 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         elif going_down:
             status["state"] = "starting"
             status["detail"] = "다시 띄우는 중: " + ", ".join(sorted(going_down))
-        elif snap.nav2_phase == "aborted" and not snap.auto_retried:
-            status["state"] = "starting"
-            status["detail"] = "Nav2 기동 중단 — 자동으로 한 번 다시 띄웁니다"
-        elif snap.nav2_phase == "aborted":
-            status["state"] = "error"
-            status["detail"] = "Nav2 기동 실패(자동 재시도도 실패) — /vica/mode/nav2_restart 로 다시 띄웁니다"
+        elif snap.nav2_phase in ("aborted", "stalled"):
+            what = "중단" if snap.nav2_phase == "aborted" else f"{NAV2_STALL_SEC:.0f} s 넘게 진행 없음"
+            if not snap.auto_retried:
+                status["state"] = "starting"
+                status["detail"] = f"Nav2 기동 {what} — 자동으로 한 번 다시 띄웁니다"
+            else:
+                status["state"] = "error"
+                status["detail"] = (f"Nav2 기동 {what}(자동 재시도 뒤에도) — "
+                                    "/vica/mode/nav2_restart 로 다시 띄웁니다")
         elif (target == "activating" or "activating" in drive_states.values()
               or snap.nav2_phase == "starting" or any(k in drive for k in young)):
             status["state"] = "starting"
@@ -233,14 +245,17 @@ def drive_stop_refusal(snap: Snapshot) -> str | None:
 
 
 def should_auto_retry(snap: Snapshot) -> bool:
-    """Nav2 기동이 중단됐으면 한 번만 자동으로 다시 띄운다(사용자 11-16).
+    """Nav2 기동이 중단되거나 멈췄으면 한 번만 자동으로 다시 띄운다(사용자 11-16).
 
     bond 4 s 실패 같은 기동 중단은 원래 방식에서도 14번 중 1번 났다. 다시 띄우면 대개 된다.
-    두 번째도 중단되면 사람에게 넘긴다(무한 반복 금지). 움직이는 중에는 하지 않는다.
+    두 번째도 안 되면 사람에게 넘긴다(무한 반복 금지). 움직이는 중에는 하지 않는다.
+    Nav2 유닛 자체가 active 일 때만 — 개발하려고 Nav2 만 손으로 내리는 중에도 '중단' 줄이 남는데,
+    그때 다시 띄우면 칸에서 띄운 Nav2 와 두 벌이 된다.
     """
     return (
         _state(snap, DRIVE_TARGET) == "active"
-        and snap.nav2_phase == "aborted"
+        and _state(snap, NAV2_UNIT) == "active"
+        and snap.nav2_phase in ("aborted", "stalled")
         and not snap.auto_retried
         and not snap.robot_moving
     )

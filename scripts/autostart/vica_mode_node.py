@@ -38,7 +38,7 @@ sys.path.insert(0, str(HERE))
 import mode_logic as ml  # noqa: E402
 
 DEFAULT_MANIFEST = HERE.parent / "units.json"
-NAV2_UNIT = "vica-nav2.service"
+NAV2_UNIT = ml.NAV2_UNIT
 NAV2_JOURNAL_GREP = "lifecycle_manager_(navigation|localization)|Please set the initial pose"
 CAN_FLAGS = Path("/sys/class/net/can1/flags")
 FRESH_SEC = 3.0
@@ -140,9 +140,13 @@ class ModeNode(Node):
                 continue
         return procs, hits
 
-    def nav2_phase(self, units, invocations) -> str:
-        if units.get(NAV2_UNIT, ("inactive",))[0] not in ("active", "activating", "deactivating"):
+    def nav2_phase(self, units, invocations, age_sec) -> str:
+        state = units.get(NAV2_UNIT, ("inactive",))[0]
+        if state not in ("active", "activating", "deactivating"):
             return "down"
+        if state != "active":
+            # activating 동안 ActiveEnterTimestamp 는 지난 호출 값이라 멈춤 판정에 못 쓴다.
+            age_sec = None
         inv = invocations.get(NAV2_UNIT, "")
         if inv and inv == self.replaced_inv:
             return "starting"
@@ -158,7 +162,7 @@ class ModeNode(Node):
             ).stdout.splitlines()
         except (OSError, subprocess.TimeoutExpired):
             out = []
-        phase = ml.nav2_phase(out)
+        phase = ml.nav2_phase(out, age_sec)
         self.nav2_cache = (inv, phase, now)
         return phase
 
@@ -184,7 +188,7 @@ class ModeNode(Node):
             moving = self.moving[0] if self.moving and now - self.moving[1] < FRESH_SEC else None
         return ml.Snapshot(
             units=units, procs=procs, cmdline_hits=hits,
-            nav2_phase=self.nav2_phase(units, invocations),
+            nav2_phase=self.nav2_phase(units, invocations, unit_age.get(NAV2_UNIT)),
             safety_state=safety, mapping_state=mapping, robot_moving=moving, can_up=can_up,
             unit_age=unit_age,
             auto_retried=self.retried_for is not None and self.retried_for == self.drive_entered,
