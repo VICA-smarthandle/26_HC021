@@ -153,9 +153,9 @@ config를 건드리지 않고 무엇을 만들지만 보여준다. 지도가 바
 | 컨테이너 → ⑥ d455 | `vica-container` → `vica-d455` | docker 가 뜬 뒤(35초 → 53초) |
 
 묶음은 `vica-base.target` 이다. 모드 노드(`vica-mode`)도 여기 들어 있다. ⑨ Nav2·⑩ Mission·⑭ 손잡이·
-⑪-1 감시·위치 확인은 **주행 묶음** `vica-drive.target` 이고, 모드 노드가 앱 요청으로 켜고 끈다(아래).
-⑫ 음성·⑮ detector 는 아직 칸에서 띄운다. 2단계 근거와 실기 결과는
-`devlog/2026-11-16-자동기동-모드노드·안정화.md`.
+⑪-1 감시·위치 확인·⑮ detector·음성(⑫ 또는 ⑬)은 **주행 묶음** `vica-drive.target` 이고, 모드 노드가 앱
+요청으로 켜고 끈다(아래). 주행 묶음이 켜져 있을 때 ⑨·⑩·⑫·⑬·⑮ 칸을 띄우면 `[중복]` 으로 거부된다.
+2단계 근거와 실기 결과는 `devlog/2026-11-16-자동기동-모드노드·안정화.md`.
 
 > **지금(2026-11-16) 부팅 등록은 꺼 두었다**(`vica-base.target` disabled). 부팅 뒤
 > `systemctl --user start vica-base.target` 으로 켠다. motor 가 같이 뜨므로 바퀴를 확인하고 켠다.
@@ -164,12 +164,12 @@ config를 건드리지 않고 무엇을 만들지만 보여준다. 지도가 바
 
 ```bash
 sudo bash scripts/autostart/install.sh                          # can1 · linger · 저널 · nice 한도(재부팅 뒤 적용)
-python3 scripts/vica_terminator_layout.py --units --stage 2b    # 유닛 생성 (rc·config 는 안 쓴다)
+python3 scripts/vica_terminator_layout.py --units --stage 2c    # 유닛 생성 (rc·config 는 안 쓴다)
 systemctl --user daemon-reload && systemctl --user enable vica-base.target
 ```
 
 `--stage` 는 켤 범위다. `1a` 바퀴 무관 → `1b` 카메라 쪽 → `1c` safety·motor → `2a` 주행 묶음 →
-`2b` 모드 노드. safety·motor 는 실행 스크립트가 nice −10 으로 올린다(권한이 없으면 경고 한 줄 뒤 기본
+`2b` 모드 노드 → `2c` 감지기·음성. safety·motor 는 실행 스크립트가 nice −10 으로 올린다(권한이 없으면 경고 한 줄 뒤 기본
 우선순위로 뜬다 — `journalctl --user-unit=vica-safety | grep 우선순위`).
 
 **주행 묶음과 모드 노드.** 앱이 쓰는 경로와 같은 서비스다. 터미널에서는 `systemctl --user start|stop
@@ -180,7 +180,12 @@ vica-drive.target` 으로도 된다.
 | `/vica/mode/drive_start` | 주행 묶음 켜기(약 40 s). 지도 그리기 중·칸에서 띄운 주행 노드가 있으면 거부 |
 | `/vica/mode/drive_stop` | 끄기. 움직이는 중이면 거부. Nav2 가 뜨는 중이면 '초기 위치 대기'까지(늦어도 45 s) 미뤘다 끈다 |
 | `/vica/mode/nav2_restart` | Nav2 만 다시 띄우기 |
-| `/vica/mode_status` | 상태 JSON(`mode`·`state`·`detail`·`nav2`·`safety`·`stop_timeouts` …) |
+| `/vica/mode/detector_on` · `detector_off` | ⑮ 감지기만 켜고 끄기(잠시 끄기). 주행을 다시 켜면 켜진다 |
+| `/vica/mode/voice_offline` · `voice_online` | 음성을 로컬(⑬ midm2-mini) / 외부 API(⑫ 클라우드)로. `~/.config/vica-terminator/voice_mode` 에 남고, 음성이 떠 있으면 다시 띄운다(말이 끊김). 움직이는 중이면 거부. 파일이 없으면 로컬 |
+| `/vica/mode_status` | 상태 JSON(`mode`·`state`·`detail`·`nav2`·`safety`·`stop_timeouts`·`detector`·`voice`·`voice_mode` …) |
+
+앱에서는 모드 선택의 주행 카드 → [안내·배송] [경비] 시트(음성 드롭다운 포함), 주행 중에는 대시보드 맨 위
+'주행 노드' 카드(사람 감지 스위치·음성 드롭다운)로 쓴다.
 
 - Nav2 기동이 중단되거나 90 s 동안 진행이 없으면 모드 노드가 Nav2 만 **한 번** 다시 띄운다. 두 번째도
   안 되면 `state=error` 로 두고 사람에게 넘긴다.
