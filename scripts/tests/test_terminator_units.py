@@ -703,9 +703,37 @@ class Nav2BondTimeout(unittest.TestCase):
     def test_wrapper_sets_bond_timeout_before_including_nav2(self):
         text = (g.AUTOSTART_SRC / "nav2_bond.launch.py").read_text(encoding="utf-8")
         self.assertIn("BOND_TIMEOUT_SEC = 8.0", text)
-        self.assertIn('SetParameter(name="bond_timeout", value=bond_timeout_sec())', text)
-        self.assertLess(text.index("SetParameter(name="), text.index("IncludeLaunchDescription("))
+        self.assertIn("SetParametersFromFile(bond_params_file(", text)
+        self.assertLess(text.index("SetParametersFromFile("), text.index("IncludeLaunchDescription("))
+        # 모든 노드 공통(/**) 전역 파라미터는 쓰지 않는다 — 아래 시험 참고.
+        self.assertNotIn('SetParameter(name="bond_timeout"', text)
         self.assertIn('"nav2_map_test.launch.py"', text)
+
+    def _wrapper(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "nav2_bond_wrapper", g.AUTOSTART_SRC / "nav2_bond.launch.py")
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except ImportError:
+            self.skipTest("launch 패키지 없음(ROS 환경 아님)")
+        return mod
+
+    def test_bond_params_name_only_the_lifecycle_managers(self):
+        # 2026-11-16 실기: SetParameter(bond_timeout) 가 모든 노드 명령줄 맨 앞에 '-p'(= /** 항목)를
+        # 만들었다. ROS 2 는 파라미터 파일의 노드 항목을 처음 나온 순서대로 적용해서, launch 가 뒤에
+        # 덧씌우는 /** 값(route_server graph_filepath·keepout 마스크 yaml_filename)이 nav2_params 의
+        # 빈 값('')에 졌다 — 레일·금지구역이 빠진 채 주행했다. 관리자 이름만 적으면 /** 가 안 생긴다.
+        mod = self._wrapper()
+        path = Path(mod.bond_params_file(8.0))
+        self.addCleanup(path.unlink, missing_ok=True)
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("/**", text)
+        for name in ("lifecycle_manager_navigation", "lifecycle_manager_localization",
+                     "lifecycle_manager_collision_monitor", "lifecycle_manager_keepout",
+                     "lifecycle_manager_route"):
+            self.assertIn(f"{name}:\n  ros__parameters:\n    bond_timeout: 8.0\n", text)
 
     def test_bond_timeout_can_be_overridden_only_by_an_explicit_variable(self):
         # 자동 재시도를 실기로 확인하려면 일부러 중단을 만들어야 한다(시험 때만 아주 짧게).
