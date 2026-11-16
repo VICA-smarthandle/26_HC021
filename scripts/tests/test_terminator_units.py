@@ -403,10 +403,15 @@ class SafetyOverUdpOnly(unittest.TestCase):
         for key in ("safety", "motor"):
             self.assertIn(self.UDP, run_script(key, self.terms[key]), key)
 
+    def test_mode_node_uses_the_udp_only_profile(self):
+        # 모드 전환·자동 재시도를 맡는 노드라 멈추면 안 되고, 데이터는 작다(Trigger·1 Hz JSON, 사용자 11-16).
+        # 11-16 실측: 공유메모리 수신자는 Nav2 기동 때 0.25~0.35 s 늦게 받았고 UDP 전용 수신자는 아니었다.
+        self.assertIn(self.UDP, run_script("mode", self.terms["mode"]))
+
     def test_no_other_unit_gives_up_shared_memory(self):
         # 카메라·Nav2 같은 큰 데이터는 공유메모리가 CPU 를 아낀다.
         for key, term in unit_terms().items():
-            if key not in ("safety", "motor"):
+            if key not in ("safety", "motor", "mode"):
                 self.assertNotIn("FASTRTPS_DEFAULT_PROFILES_FILE", run_script(key, term), key)
 
     def test_profile_is_set_before_any_node_starts(self):

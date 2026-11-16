@@ -435,7 +435,9 @@ def build_terms() -> dict[str, Term]:
             command='python3 "$VICA_BIN/vica_mode_node.py"',
             mode=HOLD,
             # comm 이 python3 라 명령줄로 막는다.
-            unit=Unit(stage="2b", guard_cmdline=r"^[^ ]*python3 [^ ]*vica_mode_node\.py"),
+            # UDP 전용: 모드 전환·자동 재시도를 맡아 멈추면 안 되고 데이터는 작다(사용자 11-16).
+            unit=Unit(stage="2b", guard_cmdline=r"^[^ ]*python3 [^ ]*vica_mode_node\.py",
+                      dds_udp_only=True),
         ),
         "imu": Term(
             title="⑦ imu",
