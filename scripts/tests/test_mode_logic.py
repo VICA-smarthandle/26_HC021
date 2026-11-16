@@ -92,6 +92,13 @@ class ParseShow(unittest.TestCase):
         self.assertEqual(entered["vica-nav2.service"], 1314262724)
         self.assertNotIn("vica-mission.service", entered)
 
+    def test_reads_when_each_unit_began_to_stop(self):
+        text = SHOW.replace("InvocationID=2a7bbeb2412d40988548348501265d46",
+                            "InvocationID=2a7bbeb2412d40988548348501265d46\n"
+                            "ActiveExitTimestampMonotonic=1314999999")
+        exited = ml.parse_exits(text)
+        self.assertEqual(exited, {"vica-nav2.service": 1314999999})
+
     def test_reads_each_unit_block(self):
         units, invocations, _ = ml.parse_show(SHOW)
         self.assertEqual(units["vica-drive.target"], ("active", "active", "success"))
@@ -364,3 +371,95 @@ class Nav2RestartRefusal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeferredStop(unittest.TestCase):
+    """기동 중 정지는 Nav2 가 '초기 위치 대기'에 이를 때까지(최대 45 s) 미룬다(사용자 11-16).
+
+    재부팅 직후 33회 시험: 켜고 20 s 에 내리면 4.9~23.8 s·시간 초과 1·강제 종료 회차 4/20,
+    다 뜬 뒤 내리면 3.7~12.6 s·시간 초과 0·2/13(~/vica_data/autostart_tests/2026-11-16_stop_cycles).
+    """
+
+    def test_stop_waits_while_nav2_is_still_coming_up(self):
+        self.assertTrue(ml.stop_should_wait(snapshot(nav2_phase="starting"), MANIFEST))
+
+    def test_stop_does_not_wait_once_nav2_is_up_or_has_failed(self):
+        for phase in ("waiting_pose", "active", "aborted", "stalled", "down"):
+            self.assertFalse(ml.stop_should_wait(snapshot(nav2_phase=phase), MANIFEST), phase)
+        self.assertFalse(ml.stop_should_wait(idle_snapshot(nav2_phase="starting"), MANIFEST))
+
+    def test_deferred_stop_goes_ahead_when_nav2_is_up_or_time_is_up(self):
+        self.assertTrue(ml.deferred_stop_due(snapshot(nav2_phase="waiting_pose", stop_pending_sec=5), MANIFEST))
+        self.assertFalse(ml.deferred_stop_due(snapshot(nav2_phase="starting", stop_pending_sec=5), MANIFEST))
+        self.assertTrue(ml.deferred_stop_due(
+            snapshot(nav2_phase="starting", stop_pending_sec=ml.STOP_DEFER_MAX_SEC), MANIFEST))
+
+    def test_nothing_is_due_without_a_request(self):
+        self.assertFalse(ml.deferred_stop_due(snapshot(nav2_phase="waiting_pose"), MANIFEST))
+
+    def test_status_says_it_will_stop_after_startup(self):
+        s = ml.derive_status(snapshot(nav2_phase="starting", stop_pending_sec=10), MANIFEST)
+        self.assertEqual((s["mode"], s["state"]), ("drive", "stopping"))
+        self.assertIn("다 뜬 뒤", s["detail"])
+        # 남은 초는 따로. 문구는 주기마다 바뀌지 않는다(로그가 2 s 마다 쌓이지 않게).
+        self.assertEqual(s["stop_in_sec"], 35)
+        later = ml.derive_status(snapshot(nav2_phase="starting", stop_pending_sec=20), MANIFEST)
+        self.assertEqual(later["detail"], s["detail"])
+
+    def test_no_auto_retry_while_a_stop_is_pending(self):
+        self.assertFalse(ml.should_auto_retry(snapshot(nav2_phase="aborted", stop_pending_sec=3)))
+
+
+class SlowStop(unittest.TestCase):
+    """정지가 늦거나 강제 종료되면 상태에 드러낸다. 11-16 13:34~13:45 앞 부팅에서 정지가 매번 61~72 s
+    (위치 확인·Nav2 시한 초과 → SIGKILL)였고, 재부팅으로 풀렸다."""
+
+    STOPPING = {"vica-drive.target": ("inactive", "dead", "success"),
+                "vica-nav2.service": ("deactivating", "stop-sigterm", "success")}
+
+    def test_a_long_stop_is_flagged(self):
+        s = ml.derive_status(snapshot(units=self.STOPPING, stopping_sec=31), MANIFEST)
+        self.assertEqual(s["state"], "stopping")
+        self.assertIn("늦어", s["detail"])
+
+    def test_a_normal_stop_is_not_flagged(self):
+        s = ml.derive_status(snapshot(units=self.STOPPING, stopping_sec=10), MANIFEST)
+        self.assertEqual((s["state"], s["detail"]), ("stopping", ""))
+
+    def test_a_unit_killed_on_the_last_stop_is_shown_when_idle(self):
+        snap = idle_snapshot(units={"vica-nav2.service": ("inactive", "dead", "timeout")})
+        s = ml.derive_status(snap, MANIFEST)
+        self.assertEqual((s["mode"], s["state"]), ("idle", "idle"))
+        self.assertEqual(s["stop_timeouts"], ["nav2"])
+        self.assertIn("재부팅", s["detail"])
+
+    def test_clean_idle_has_no_warning(self):
+        s = ml.derive_status(idle_snapshot(), MANIFEST)
+        self.assertEqual((s["stop_timeouts"], s["detail"]), ([], ""))
+
+
+class DriveComingUp(unittest.TestCase):
+    """주행 묶음 target 은 소속 유닛이 다 뜰 때까지 inactive 로 남는다(systemd 기본 순서).
+    11-16 16:10 실기: 켜고 3 s 뒤 정지 요청에 '이미 꺼져 있습니다'라고 답하고 계속 떴다."""
+
+    COMING = {"vica-drive.target": ("inactive", "dead", "success"),
+              "vica-nav2.service": ("active", "running", "success"),
+              "vica-mission.service": ("activating", "start-pre", "success")}
+
+    def test_members_coming_up_count_as_drive_on(self):
+        self.assertTrue(ml.drive_on(snapshot(units=self.COMING, nav2_phase="starting"), MANIFEST))
+        self.assertFalse(ml.drive_on(idle_snapshot(), MANIFEST))
+
+    def test_a_stop_while_coming_up_is_deferred(self):
+        self.assertTrue(ml.stop_should_wait(snapshot(units=self.COMING, nav2_phase="starting"), MANIFEST))
+
+    def test_status_is_drive_starting(self):
+        s = ml.derive_status(snapshot(units=self.COMING, nav2_phase="starting"), MANIFEST)
+        self.assertEqual((s["mode"], s["state"]), ("drive", "starting"))
+
+    def test_status_while_a_deferred_stop_waits_on_coming_up(self):
+        s = ml.derive_status(snapshot(units=self.COMING, nav2_phase="starting", stop_pending_sec=2), MANIFEST)
+        self.assertEqual((s["mode"], s["state"]), ("drive", "stopping"))
+
+    def test_start_is_not_repeated_while_coming_up(self):
+        self.assertIsNone(ml.drive_start_refusal(snapshot(units=self.COMING), MANIFEST))

@@ -80,6 +80,9 @@ class ModeNode(Node):
         # 새 호출이 뜰 때까지 단계를 starting 으로 본다(11-16 실기: 재시도 직후 '재시도도 실패' 로 보임).
         self.nav2_inv = None
         self.replaced_inv = None
+        # 미뤄 둔 정지 요청을 받은 시각(time.monotonic). 기동 중 정지는 Nav2 가 다 뜬 뒤 내린다(사용자 11-16).
+        self.stop_pending_since: float | None = None
+        self.drive_units = [e["unit"] for e in self.manifest.values() if e["bundle"] == "drive"]
 
         latched = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -168,12 +171,17 @@ class ModeNode(Node):
 
     def collect(self) -> ml.Snapshot:
         show = systemctl(
-            "show", "-p", "Id,ActiveState,SubState,Result,InvocationID,ActiveEnterTimestampMonotonic",
+            "show", "-p",
+            "Id,ActiveState,SubState,Result,InvocationID,ActiveEnterTimestampMonotonic,"
+            "ActiveExitTimestampMonotonic",
             ml.BASE_TARGET, ml.DRIVE_TARGET, *self.units,
         )
         units, invocations, entered = ml.parse_show(show.stdout)
         mono_us = time.monotonic() * 1e6   # systemd 의 ...Monotonic 과 같은 시계
         unit_age = {u: (mono_us - us) / 1e6 for u, us in entered.items()}
+        exited = ml.parse_exits(show.stdout)
+        going_down = [(mono_us - exited[u]) / 1e6 for u in self.drive_units
+                      if units.get(u, ("",))[0] == "deactivating" and u in exited]
         self.drive_entered = entered.get(ml.DRIVE_TARGET)
         self.nav2_inv = invocations.get(NAV2_UNIT)
         procs, hits = self.scan_processes()
@@ -192,13 +200,25 @@ class ModeNode(Node):
             safety_state=safety, mapping_state=mapping, robot_moving=moving, can_up=can_up,
             unit_age=unit_age,
             auto_retried=self.retried_for is not None and self.retried_for == self.drive_entered,
+            stop_pending_sec=None if self.stop_pending_since is None else now - self.stop_pending_since,
+            stopping_sec=max(going_down) if going_down else None,
         )
 
     # ---- 주기 발행 ------------------------------------------------------------
     def tick(self) -> None:
         try:
             snap = self.collect()
-            if ml.should_auto_retry(snap):
+            if ml.deferred_stop_due(snap, self.manifest):
+                # 미뤄 둔 정지: Nav2 가 '초기 위치 대기'에 이르렀거나 45 s 가 지났다.
+                done = systemctl("stop", "--no-block", ml.DRIVE_TARGET)
+                self.get_logger().info(
+                    f"[예약 정지] {snap.stop_pending_sec:.1f} s 기다린 뒤 주행 묶음을 내린다"
+                    f" (nav2={snap.nav2_phase}, rc={done.returncode})"
+                )
+                # 이번 주기의 상태는 '내리는 중'으로 둔다(snap 은 내리기 전 사실이다).
+                self.stop_pending_since = None
+            elif ml.should_auto_retry(snap):
+                # elif: 방금 정지를 내렸으면 재시도하지 않는다 — snap 의 target 은 아직 active 다.
                 # Nav2 기동 중단(bond·응답 유실) → Nav2 만 한 번 다시 띄운다(사용자 11-16).
                 self.retried_for = self.drive_entered
                 self.replaced_inv = self.nav2_inv
@@ -244,9 +264,15 @@ class ModeNode(Node):
         return response
 
     def on_drive_start(self, _request, response):
+        if self.stop_pending_since is not None:
+            # 기동 중 정지를 미뤄 두었는데 다시 주행을 눌렀다 — 정지를 취소하고 그대로 둔다.
+            self.stop_pending_since = None
+            self.get_logger().info("[예약 정지 취소] 주행 요청")
+            response.success, response.message = True, "정지 예약을 취소했습니다. 주행 모드를 유지합니다."
+            return response
         snap = self.collect()
-        if ml._state(snap, ml.DRIVE_TARGET) in ("active", "activating"):
-            response.success, response.message = True, "이미 주행 모드입니다."
+        if ml.drive_on(snap, self.manifest):
+            response.success, response.message = True, "이미 주행 모드입니다(켜져 있거나 뜨는 중)."
             return response
         return self.run(
             response, ml.drive_start_refusal(snap, self.manifest),
@@ -256,11 +282,26 @@ class ModeNode(Node):
 
     def on_drive_stop(self, _request, response):
         snap = self.collect()
-        if ml._state(snap, ml.DRIVE_TARGET) == "inactive":
-            response.success, response.message = True, "주행 묶음이 이미 꺼져 있습니다."
+        if not ml.drive_on(snap, self.manifest):
+            # target 만 보면 뜨는 중에도 inactive 다(11-16 16:10 실기). 소속 유닛까지 본다.
+            going = any(snap.units.get(u, ("",))[0] == "deactivating" for u in self.drive_units)
+            response.success = True
+            response.message = "주행 묶음을 내리는 중입니다." if going else "주행 묶음이 이미 꺼져 있습니다."
+            return response
+        if self.stop_pending_since is not None:
+            response.success, response.message = True, "이미 정지를 예약했습니다. Nav2 가 다 뜬 뒤 내립니다."
+            return response
+        refusal = ml.drive_stop_refusal(snap)
+        if refusal is None and ml.stop_should_wait(snap, self.manifest):
+            # 기동 중에 내리면 강제 종료·정지 지연이 는다(11-16 시험). 다 뜬 뒤(늦어도 45 s) 내린다.
+            self.stop_pending_since = time.monotonic()
+            self.get_logger().info("[예약 정지] Nav2 기동 중 — 다 뜬 뒤 내린다")
+            response.success = True
+            response.message = (f"Nav2 가 뜨는 중입니다. 다 뜬 뒤(늦어도 {ml.STOP_DEFER_MAX_SEC:.0f} s 안) "
+                                "내립니다. 진행은 /vica/mode_status 로 봅니다.")
             return response
         return self.run(
-            response, ml.drive_stop_refusal(snap),
+            response, refusal,
             ["stop", "--no-block", ml.DRIVE_TARGET],
             "주행 묶음을 내립니다(기본 묶음은 그대로).",
         )
@@ -268,8 +309,11 @@ class ModeNode(Node):
     def on_nav2_restart(self, _request, response):
         snap = self.collect()
         inv = self.nav2_inv
+        refusal = ml.nav2_restart_refusal(snap)
+        if refusal is None and self.stop_pending_since is not None:
+            refusal = "정지를 예약해 두었습니다. 다시 띄우려면 먼저 주행을 다시 누르세요."
         response = self.run(
-            response, ml.nav2_restart_refusal(snap),
+            response, refusal,
             ["restart", "--no-block", NAV2_UNIT],
             "Nav2 를 다시 띄웁니다. 초기 위치를 다시 잡아야 합니다.",
         )

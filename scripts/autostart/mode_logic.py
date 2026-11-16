@@ -28,6 +28,12 @@ STARTUP_GRACE_SEC = 45.0
 # 11-16 10:09 회차는 map_server 응답 유실('failed to send response to /map_server/change_state')
 # 뒤 관리자가 실패 줄 없이 189 s 멈췄다 — Humble lifecycle_manager 는 응답을 시한 없이 기다린다.
 NAV2_STALL_SEC = 90.0
+# 기동 중 정지는 Nav2 가 '초기 위치 대기'에 이를 때까지 미룬다(사용자 11-16). 재부팅 직후 33회 시험에서
+# 켜고 20 s 에 내리면 정지 4.9~23.8 s·시간 초과 1·강제 종료 회차 4/20, 다 뜬 뒤 내리면 3.7~12.6 s·
+# 시간 초과 0·2/13. 정상 기동은 15~20 s 에 '초기 위치 대기'에 이른다. 45 s 가 지나면 그냥 내린다.
+STOP_DEFER_MAX_SEC = 45.0
+# 이보다 오래 내려가는 중이면 상태에 드러낸다. 11-16 앞 부팅에서 정지가 61~72 s 였다(재부팅으로 풀림).
+STOP_SLOW_SEC = 30.0
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _NAV = "[lifecycle_manager_navigation]:"
@@ -56,6 +62,10 @@ class Snapshot:
     unit_age: dict[str, float] = field(default_factory=dict)
     # 이번 주행 묶음에서 Nav2 를 이미 한 번 자동으로 다시 띄웠는가.
     auto_retried: bool = False
+    # 미뤄 둔 정지 요청이 있으면 그 뒤 지난 초. 없으면 None.
+    stop_pending_sec: float | None = None
+    # 주행 유닛 가운데 가장 오래 내려가는 중인 것의 초. 내려가는 중이 없으면 None.
+    stopping_sec: float | None = None
 
 
 def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
@@ -77,6 +87,16 @@ def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
         if props.get("ActiveEnterTimestampMonotonic", "0") not in ("", "0"):
             entered[name] = int(props["ActiveEnterTimestampMonotonic"])
     return units, invocations, entered
+
+
+def parse_exits(text: str) -> dict[str, int]:
+    """같은 show 출력에서 ActiveExitTimestampMonotonic(μs, 내려가기 시작한 때)."""
+    exited: dict[str, int] = {}
+    for block in text.strip().split("\n\n"):
+        props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if props.get("Id") and props.get("ActiveExitTimestampMonotonic", "0") not in ("", "0"):
+            exited[props["Id"]] = int(props["ActiveExitTimestampMonotonic"])
+    return exited
 
 
 def nav2_phase(lines: list[str], age_sec: float | None = None) -> str:
@@ -144,6 +164,17 @@ def _bundle(manifest: dict, bundle: str) -> dict:
     return {k: v for k, v in manifest.items() if v["bundle"] == bundle}
 
 
+def drive_on(snap: Snapshot, manifest: dict) -> bool:
+    """주행 묶음이 켜져 있거나 뜨는 중인가.
+
+    target 은 소속 유닛이 다 뜰 때까지 inactive 로 남는다(systemd 가 target 의 Wants 에 After 를 붙인다).
+    11-16 16:10 실기: 켜고 3 s 뒤 정지 요청에 target 만 보고 '이미 꺼져 있습니다'라고 답했다.
+    """
+    if _state(snap, DRIVE_TARGET) in ("active", "activating"):
+        return True
+    return any(_state(snap, e["unit"]) in ("active", "activating") for e in _bundle(manifest, "drive").values())
+
+
 def derive_status(snap: Snapshot, manifest: dict) -> dict:
     """/vica/mode_status 에 실을 내용."""
     drive = _bundle(manifest, "drive")
@@ -165,18 +196,29 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         "missing_nodes": missing,
         "duplicated": _duplicated(snap, manifest),
         "can_up": snap.can_up,
+        # 지난 정지에서 시한을 넘겨 강제 종료된 주행 유닛(systemd Result=timeout). 다시 켜면 지워진다.
+        "stop_timeouts": sorted(k for k, e in drive.items()
+                                if snap.units.get(e["unit"], ("", "", ""))[2] == "timeout"),
     }
 
     drive_states = {k: _state(snap, e["unit"]) for k, e in drive.items()}
     going_down = [k for k, st in drive_states.items() if st == "deactivating"]
-    if target in ("active", "activating", "deactivating") or going_down:
+    if drive_on(snap, manifest) or target == "deactivating" or going_down:
         status["mode"] = "drive"
         drive_failed = [k for k in failed if k in drive]
         drive_missing = [k for k in missing if k in drive]
         # 묶음 정지 때는 target 이 먼저 inactive 가 되고 멤버가 늦게 내려간다. target 이 active 인데
         # 멤버만 내려가는 중이면 그 유닛을 다시 띄우는 중(자동 재시도·nav2_restart)이다.
-        if target == "deactivating" or (going_down and target != "active"):
+        if snap.stop_pending_sec is not None and drive_on(snap, manifest):
             status["state"] = "stopping"
+            # 남은 초는 따로 싣는다 — detail 에 넣으면 매 주기 문구가 바뀌어 로그가 2 s 마다 쌓인다(11-16 실기).
+            status["stop_in_sec"] = round(max(0.0, STOP_DEFER_MAX_SEC - snap.stop_pending_sec))
+            status["detail"] = f"Nav2 가 다 뜬 뒤 내립니다(늦어도 {STOP_DEFER_MAX_SEC:.0f} s 안)"
+        elif target == "deactivating" or (going_down and target != "active"):
+            status["state"] = "stopping"
+            if snap.stopping_sec is not None and snap.stopping_sec >= STOP_SLOW_SEC:
+                status["detail"] = (f"정지가 늦어지고 있습니다({snap.stopping_sec:.0f} s) — "
+                                    "되풀이되면 재부팅이 필요합니다")
         elif drive_failed:
             status["state"] = "error"
             status["detail"] = "실패한 유닛: " + ", ".join(drive_failed)
@@ -208,12 +250,15 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
     if snap.mapping_state not in MAPPING_IDLE:
         status["mode"] = "mapping"
         status["state"] = snap.mapping_state
+    elif status["stop_timeouts"]:
+        status["detail"] = ("지난 주행 정지에서 시간 초과로 강제 종료: " + ", ".join(status["stop_timeouts"])
+                            + " — 되풀이되면 재부팅이 필요합니다")
     return status
 
 
 def drive_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
     """주행 묶음을 올리면 안 되는 이유. 없으면 None. 이미 떠 있으면 None(같은 요청을 두 번 받아도 된다)."""
-    if _state(snap, DRIVE_TARGET) in ("active", "activating"):
+    if drive_on(snap, manifest):
         return None
     if snap.mapping_state not in MAPPING_IDLE:
         return f"지도 그리기 중입니다({snap.mapping_state}). 지도 그리기를 끝낸 뒤 주행을 시작합니다."
@@ -258,7 +303,20 @@ def should_auto_retry(snap: Snapshot) -> bool:
         and snap.nav2_phase in ("aborted", "stalled")
         and not snap.auto_retried
         and not snap.robot_moving
+        and snap.stop_pending_sec is None
     )
+
+
+def stop_should_wait(snap: Snapshot, manifest: dict) -> bool:
+    """정지 요청을 미뤄야 하는가 — 주행 묶음이 켜졌거나 뜨는 중이고 Nav2 가 아직 '초기 위치 대기' 전."""
+    return drive_on(snap, manifest) and snap.nav2_phase == "starting"
+
+
+def deferred_stop_due(snap: Snapshot, manifest: dict) -> bool:
+    """미뤄 둔 정지를 지금 실행할 때인가."""
+    if snap.stop_pending_sec is None:
+        return False
+    return not stop_should_wait(snap, manifest) or snap.stop_pending_sec >= STOP_DEFER_MAX_SEC
 
 
 def nav2_restart_refusal(snap: Snapshot) -> str | None:

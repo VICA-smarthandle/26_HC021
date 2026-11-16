@@ -1500,7 +1500,9 @@ RUN_TEMPLATE = """\
 # 끝나는 값: 0 멈추라는 신호를 받음 · 70 스스로 끝남 · 75 이미 떠 있어 거부
 trap 'VICA_STOPPING=1' INT TERM
 VICA_BIN="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/bin"
-{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}{nice_block}printf '실행: %s\\n' {command_q}
+{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}{nice_block}# 준비 중에 정지 신호가 왔으면 명령을 띄우지 않는다(2026-11-16 감시 유닛이 신호를 받고도 launch 를 띄워 SIGKILL).
+[ -n "$VICA_STOPPING" ] && exit 0
+printf '실행: %s\\n' {command_q}
 {command}
 _vica_rc=$?
 [ -n "$VICA_STOPPING" ] && exit 0

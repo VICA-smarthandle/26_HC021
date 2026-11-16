@@ -430,6 +430,49 @@ class SafetyOverUdpOnly(unittest.TestCase):
         self.assertTrue((tmp / "rc" / "bin" / "fastdds_udp_only.xml").is_file())
 
 
+class StopDuringSetup(unittest.TestCase):
+    """준비(환경 불러오기) 중에 정지 신호가 오면 명령을 띄우지 않고 끝낸다.
+
+    2026-11-16 16:03 실기: 감시 유닛이 35.49 s 에 정지 신호를 받고도 36.14 s 에 ros2 launch 를 띄워
+    20 s 시한 초과 → SIGKILL. trap 이 VICA_STOPPING 표시만 하고, 표시를 명령이 끝난 뒤에만 봤다.
+    (bash 는 신호를 처리하고 정상 종료한 하위 프로세스를 보면 다음 줄로 간다 — systemd-run 재현,
+    ~/vica_data/autostart_tests/2026-11-16_deferred_stop/signal_race)
+    """
+
+    CHECK = '[ -n "$VICA_STOPPING" ] && exit 0'
+
+    def test_every_unit_checks_for_a_stop_right_before_its_command(self):
+        for key, term in unit_terms().items():
+            lines = run_script(key, term).splitlines()
+            start = next(i for i, l in enumerate(lines) if l.startswith("printf '실행: "))
+            self.assertEqual(lines[start - 1], self.CHECK, key)
+
+    def test_the_stop_flag_is_set_before_any_setup(self):
+        for key, term in unit_terms().items():
+            text = run_script(key, term)
+            self.assertLess(text.index("trap 'VICA_STOPPING=1' INT TERM"), text.index("VICA_BIN="), key)
+
+    def test_a_stop_during_setup_does_not_start_the_command(self):
+        # 생성된 스크립트에서 준비 부분을 '신호를 처리하고 정상 종료하는 하위 프로세스'로 바꿔
+        # systemd 처럼 스크립트·하위 전부에 SIGINT 를 보낸다.
+        import signal, subprocess, time
+        script = (
+            "#!/bin/bash\n"
+            "trap 'VICA_STOPPING=1' INT TERM\n"
+            "python3 -c \"import signal,sys,time; signal.signal(signal.SIGINT, lambda *a: sys.exit(0)); "
+            "time.sleep(1.5)\"\n"
+            + self.CHECK + "\n"
+            "echo started\n"
+            "sleep 5\n"
+        )
+        proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        time.sleep(0.5)
+        os.killpg(proc.pid, signal.SIGINT)
+        out, _ = proc.communicate(timeout=10)
+        self.assertEqual((proc.returncode, out), (0, ""))
+
+
 class SafetyFirstPriority(unittest.TestCase):
     """safety·motor 는 다른 노드보다 CPU 를 먼저 받는다(사용자 11-16 B).
 
