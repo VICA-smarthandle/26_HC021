@@ -408,10 +408,15 @@ class SafetyOverUdpOnly(unittest.TestCase):
         # 11-16 실측: 공유메모리 수신자는 Nav2 기동 때 0.25~0.35 s 늦게 받았고 UDP 전용 수신자는 아니었다.
         self.assertIn(self.UDP, run_script("mode", self.terms["mode"]))
 
+    def test_app_unit_uses_the_udp_only_profile(self):
+        # 앱의 비상정지·해제·모드 전환·teleop 이 rosbridge 를 거친다. 이 유닛의 노드가 다루는 것은 문자열
+        # 상태·오도메트리·진단·서비스뿐이다(11-16 그래프 조사 — 지도 원본·영상·스캔 없음, 지도는 HTTP).
+        self.assertIn(self.UDP, run_script("app", self.terms["app"]))
+
     def test_no_other_unit_gives_up_shared_memory(self):
         # 카메라·Nav2 같은 큰 데이터는 공유메모리가 CPU 를 아낀다.
         for key, term in unit_terms().items():
-            if key not in ("safety", "motor", "mode"):
+            if key not in ("safety", "motor", "mode", "app"):
                 self.assertNotIn("FASTRTPS_DEFAULT_PROFILES_FILE", run_script(key, term), key)
 
     def test_profile_is_set_before_any_node_starts(self):

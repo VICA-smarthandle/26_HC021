@@ -659,6 +659,9 @@ def build_terms() -> dict[str, Term]:
                 stage="1a",
                 guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
                 super_client=True,
+                # UDP 전용: 앱의 비상정지·모드 전환이 여기를 거쳐 멈추면 안 되고, 다루는 데이터가 작다
+                # (사용자 11-16). --discovery-server 일 때는 super client 프로파일이 이것을 덮는다.
+                dds_udp_only=True,
             ),
                     guard=("rosbridge_webso",),
 ),
