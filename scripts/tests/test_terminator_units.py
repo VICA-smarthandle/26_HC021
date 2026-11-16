@@ -549,6 +549,16 @@ class Nav2BondTimeout(unittest.TestCase):
         self.assertLess(text.index("SetParameter(name="), text.index("IncludeLaunchDescription("))
         self.assertIn('"nav2_map_test.launch.py"', text)
 
+    def test_wrapper_forwards_the_map_and_route_arguments(self):
+        # 2026-11-16 실기: 바깥 launch 의 명령줄 인자(map:=…)는 안쪽 include 로 저절로 넘어가지
+        # 않았다 — "Included launch description missing required argument 'map'" 로 매번 실패.
+        # 바깥에서 선언하고 launch_arguments 로 직접 넘겨야 한다.
+        text = (g.AUTOSTART_SRC / "nav2_bond.launch.py").read_text(encoding="utf-8")
+        for name in ("map", "use_route"):
+            self.assertIn(f'DeclareLaunchArgument("{name}"', text, name)
+            self.assertIn(f'"{name}": LaunchConfiguration("{name}")', text, name)
+        self.assertIn("launch_arguments=", text)
+
 
 class ModeNodeUnit(unittest.TestCase):
     """모드 노드(2b). 부팅 때 뜨고, 앱이 부르면 주행 묶음을 켜고 끈다."""
