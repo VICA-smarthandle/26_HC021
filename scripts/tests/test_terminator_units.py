@@ -440,6 +440,71 @@ class SafetyOverUdpOnly(unittest.TestCase):
         self.assertTrue((tmp / "rc" / "bin" / "fastdds_udp_only.xml").is_file())
 
 
+class DetectorAndVoiceUnits(unittest.TestCase):
+    """⑮ 감지기·⑫/⑬ 음성도 주행 묶음에 넣는다(사용자 11-16 "모드를 켤 때 포함시키세요").
+
+    음성은 앱에서 온라인(⑫)·오프라인 믿음(⑬)을 고른다(사용자: 드롭다운). 유닛은 하나(vica-llm)이고
+    ~/.config/vica-terminator/voice_mode 를 읽어 둘 중 하나를 띄운다. ⑬ 은 10-24 손 수정본 그대로
+    (Ollama 가 꺼져 있으면 켜고 VICA_LOCAL_RULES=1).
+    """
+
+    def setUp(self):
+        self.terms = g.build_terms()
+
+    def test_both_join_the_drive_bundle_at_stage_2c(self):
+        self.assertIn("2c", g.STAGES)
+        for key in ("detector", "llm"):
+            unit = self.terms[key].unit
+            self.assertEqual((unit.stage, unit.bundle), ("2c", "drive"), key)
+        self.assertNotIn("detector", g.units_upto(self.terms, "2b"))
+        self.assertIn("detector", g.units_upto(self.terms, "2c"))
+
+    def test_detector_runs_without_a_terminal_and_is_cleaned_up_inside_the_container(self):
+        unit = self.terms["detector"].unit
+        self.assertNotIn("-it", unit.command)
+        self.assertIn("/workspaces/isaac_ros-dev/vica_detector", unit.command)
+        pattern = re.compile(unit.stop_pattern)
+        self.assertTrue(unit.stop_pattern.startswith("^"))
+        self.assertTrue(pattern.search("/bin/bash /workspaces/isaac_ros-dev/vica_detector"))
+        self.assertTrue(pattern.search("python3 -m vica_perception.person_detector_node"))
+        self.assertFalse(pattern.search("grep vica_perception.person_detector_node"))
+
+    def test_voice_unit_guards_against_a_pane_voice(self):
+        pattern = re.compile(self.terms["llm"].unit.guard_cmdline)
+        self.assertTrue(pattern.search(
+            "/usr/bin/python3 /opt/ros/humble/bin/ros2 launch launch/vica_voice.launch.py map_id:=m"))
+        self.assertFalse(pattern.search("bash -c grep vica_voice.launch.py"))
+
+    def _voice(self, mode):
+        """음성 유닛 명령을 ros2·curl·nohup 을 흉내 낸 bash 에서 돌려 무엇을 띄우는지 본다."""
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        if mode is not None:
+            (home / ".config" / "vica-terminator").mkdir(parents=True)
+            (home / ".config" / "vica-terminator" / "voice_mode").write_text(mode + "\n")
+        stub = (
+            'ros2() { echo "ROS2 $* model=${VICA_LLM_MODEL:-none} rules=${VICA_LOCAL_RULES:-0}"; }; '
+            "curl() { return 0; }; nohup() { echo NOHUP; }; VICA_MAP_ID=m; "
+        )
+        out = subprocess.run(["bash", "-c", stub + self.terms["llm"].unit.command],
+                             capture_output=True, text=True, env={"HOME": str(home), "PATH": os.environ["PATH"]})
+        return out.stdout
+
+    def test_voice_mode_file_picks_online_or_offline(self):
+        online = self._voice("online")
+        self.assertIn("ROS2 launch launch/vica_voice.launch.py map_id:=m model=none rules=0", online)
+        offline = self._voice("offline")
+        self.assertIn("model=midm2-mini rules=1", offline)
+
+    def test_voice_defaults_to_offline_without_a_choice(self):
+        self.assertIn("model=midm2-mini rules=1", self._voice(None))
+
+    def test_rc_for_the_voice_panes_is_unchanged(self):
+        # ⑬ 칸은 10-24 손 수정본(t_llm_local.rc)을 쓴다. 유닛을 붙여도 칸 rc 는 그대로여야 한다.
+        for key in ("llm", "llm_local", "detector"):
+            self.assertNotIn("voice_mode", g.render_rc(self.terms[key], ROS_WS, MAP_ID), key)
+
+
 class StopDuringSetup(unittest.TestCase):
     """준비(환경 불러오기) 중에 정지 신호가 오면 명령을 띄우지 않고 끝낸다.
 

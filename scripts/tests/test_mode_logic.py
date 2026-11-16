@@ -19,6 +19,10 @@ MANIFEST = {
              "guard_cmdline": ""},
     "mission": {"unit": "vica-mission.service", "bundle": "drive",
                 "guard": ["vica_mission_ma", "mission_manager"], "guard_cmdline": ""},
+    "detector": {"unit": "vica-detector.service", "bundle": "drive",
+                 "guard": ["vica_detector"], "guard_cmdline": ""},
+    "llm": {"unit": "vica-llm.service", "bundle": "drive", "guard": ["vica_llm_node"],
+            "guard_cmdline": "^[^ ]*python3 [^ ]*ros2 launch launch/vica_voice\\.launch\\.py"},
 }
 
 SHOW = """\
@@ -463,3 +467,43 @@ class DriveComingUp(unittest.TestCase):
 
     def test_start_is_not_repeated_while_coming_up(self):
         self.assertIsNone(ml.drive_start_refusal(snapshot(units=self.COMING), MANIFEST))
+
+
+class DetectorAndVoice(unittest.TestCase):
+    """감지기 잠시 끄기·음성 온라인/오프라인 고르기(사용자 11-16)."""
+
+    def test_status_reports_detector_voice_and_voice_choice(self):
+        snap = snapshot(units={"vica-detector.service": ("inactive", "dead", "success"),
+                               "vica-llm.service": ("active", "running", "success")},
+                        voice_mode="online")
+        s = ml.derive_status(snap, MANIFEST)
+        self.assertEqual((s["detector"], s["voice"], s["voice_mode"]), ("inactive", "active", "online"))
+
+    def test_a_detector_turned_off_by_hand_is_not_an_error(self):
+        snap = snapshot(units={"vica-detector.service": ("inactive", "dead", "success")})
+        self.assertNotEqual(ml.derive_status(snap, MANIFEST)["state"], "error")
+
+    def test_detector_can_be_toggled_only_while_driving(self):
+        self.assertIsNone(ml.detector_refusal(snapshot(), MANIFEST))
+        self.assertIsNotNone(ml.detector_refusal(idle_snapshot(), MANIFEST))
+
+    def test_voice_is_not_switched_while_moving(self):
+        # 음성을 다시 띄우면 말이 끊긴다. 안내 중 대화를 끊지 않는다.
+        self.assertIsNotNone(ml.voice_switch_refusal(snapshot(robot_moving=True)))
+        self.assertIsNone(ml.voice_switch_refusal(snapshot()))
+        self.assertIsNone(ml.voice_switch_refusal(idle_snapshot()))
+
+    def test_voice_mode_file_reading(self):
+        self.assertEqual(ml.read_voice_mode("online\n"), "online")
+        self.assertEqual(ml.read_voice_mode("offline"), "offline")
+        self.assertEqual(ml.read_voice_mode(""), "offline")
+        self.assertEqual(ml.read_voice_mode("이상한값"), "offline")
+
+
+class CmdlineScan(unittest.TestCase):
+    def test_ros2_launch_frontends_are_scanned(self):
+        # 음성 유닛은 ros2 launch(comm 'ros2')로만 알아볼 수 있다 — 노드는 .venv 파이썬이라 comm 이
+        # 'python' 이고 이름이 같다(11-16 실기: '노드가 없습니다: llm' 오판).
+        self.assertTrue(ml.needs_cmdline("ros2"))
+        self.assertTrue(ml.needs_cmdline("python3"))
+        self.assertFalse(ml.needs_cmdline("controller_serv"))

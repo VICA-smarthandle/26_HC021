@@ -66,6 +66,8 @@ class Snapshot:
     stop_pending_sec: float | None = None
     # 주행 유닛 가운데 가장 오래 내려가는 중인 것의 초. 내려가는 중이 없으면 None.
     stopping_sec: float | None = None
+    # 앱에서 고른 음성(voice_mode 파일). online(⑫) · offline(⑬ 오프라인 믿음)
+    voice_mode: str = "offline"
 
 
 def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
@@ -138,8 +140,9 @@ def needs_cmdline(comm: str) -> bool:
 
     명령줄 검사(guard_cmdline)는 `#!/usr/bin/env python3` 로 떠서 comm 이 python3 인
     프로세스를 찾는 데만 쓴다. 나머지까지 매 초 명령줄을 읽으면 노드가 CPU 를 14~19 % 썼다.
+    'ros2' 는 ros2 launch 앞단(유닛마다 하나) — 음성 유닛은 이것으로만 알아본다(2026-11-16).
     """
-    return comm in ("python3", "python")
+    return comm in ("python3", "python", "ros2")
 
 
 def _alive(snap: Snapshot, entry: dict) -> bool:
@@ -199,6 +202,11 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         # 지난 정지에서 시한을 넘겨 강제 종료된 주행 유닛(systemd Result=timeout). 다시 켜면 지워진다.
         "stop_timeouts": sorted(k for k, e in drive.items()
                                 if snap.units.get(e["unit"], ("", "", ""))[2] == "timeout"),
+        # 감지기·음성 유닛 상태(active·inactive·activating·deactivating·failed)와 고른 음성.
+        # 감지기는 앱에서 잠시 끌 수 있어 inactive 여도 오류가 아니다(사용자 11-16).
+        "detector": _state(snap, manifest["detector"]["unit"]) if "detector" in manifest else "none",
+        "voice": _state(snap, manifest["llm"]["unit"]) if "llm" in manifest else "none",
+        "voice_mode": snap.voice_mode,
     }
 
     drive_states = {k: _state(snap, e["unit"]) for k, e in drive.items()}
@@ -317,6 +325,31 @@ def deferred_stop_due(snap: Snapshot, manifest: dict) -> bool:
     if snap.stop_pending_sec is None:
         return False
     return not stop_should_wait(snap, manifest) or snap.stop_pending_sec >= STOP_DEFER_MAX_SEC
+
+
+VOICE_MODES = ("online", "offline")
+
+
+def read_voice_mode(text: str) -> str:
+    """voice_mode 파일 내용. 없거나 모르는 값이면 offline(⑬, 인터넷 없이 일정한 쪽)."""
+    value = text.strip()
+    return value if value in VOICE_MODES else "offline"
+
+
+def detector_refusal(snap: Snapshot, manifest: dict) -> str | None:
+    """감지기 켜기·끄기를 거절할 이유. 주행 묶음 밖에서는 다루지 않는다."""
+    if "detector" not in manifest:
+        return "감지기 유닛이 없습니다(--units --stage 2c)."
+    if not drive_on(snap, manifest):
+        return "주행 모드가 아닙니다."
+    return None
+
+
+def voice_switch_refusal(snap: Snapshot) -> str | None:
+    """음성을 바꾸면 음성 유닛을 다시 띄워 말이 끊긴다. 움직이는 중(안내 중 대화)에는 하지 않는다."""
+    if snap.robot_moving:
+        return "주행 중입니다. 정지한 뒤 바꿉니다."
+    return None
 
 
 def nav2_restart_refusal(snap: Snapshot) -> str | None:

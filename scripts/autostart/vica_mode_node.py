@@ -4,6 +4,8 @@
     /vica/mode/drive_start     std_srvs/Trigger   주행 묶음 올림(이미 떠 있으면 그대로 성공)
     /vica/mode/drive_stop      std_srvs/Trigger   주행 묶음만 내림(기본 묶음·motor 는 그대로)
     /vica/mode/nav2_restart    std_srvs/Trigger   Nav2 유닛만 다시 띄움(기동 실패 때)
+    /vica/mode/detector_on|off std_srvs/Trigger   ⑮ 감지기만 켜고 끔(잠시 끄기, 주행을 다시 켜면 켜짐)
+    /vica/mode/voice_online|offline  Trigger      음성을 ⑫ 온라인 / ⑬ 오프라인 믿음으로(voice_mode 파일)
     /vica/mode_status          std_msgs/String    JSON, 2초마다 + TRANSIENT_LOCAL
 
 프로세스를 직접 소유하지 않는다. systemctl --user 에 맡기고 결과는 매 초 다시 읽는다.
@@ -38,6 +40,8 @@ sys.path.insert(0, str(HERE))
 import mode_logic as ml  # noqa: E402
 
 DEFAULT_MANIFEST = HERE.parent / "units.json"
+# 음성 유닛(vica-llm)이 기동 때 읽는 파일. 생성기 VOICE_MODE_FILE 과 같은 곳.
+VOICE_MODE_PATH = HERE.parent / "voice_mode"
 NAV2_UNIT = ml.NAV2_UNIT
 NAV2_JOURNAL_GREP = "lifecycle_manager_(navigation|localization)|Please set the initial pose"
 CAN_FLAGS = Path("/sys/class/net/can1/flags")
@@ -96,6 +100,10 @@ class ModeNode(Node):
         self.create_service(Trigger, "/vica/mode/drive_start", self.on_drive_start)
         self.create_service(Trigger, "/vica/mode/drive_stop", self.on_drive_stop)
         self.create_service(Trigger, "/vica/mode/nav2_restart", self.on_nav2_restart)
+        self.create_service(Trigger, "/vica/mode/detector_on", self.on_detector_on)
+        self.create_service(Trigger, "/vica/mode/detector_off", self.on_detector_off)
+        self.create_service(Trigger, "/vica/mode/voice_online", lambda q, r: self.on_voice(r, "online"))
+        self.create_service(Trigger, "/vica/mode/voice_offline", lambda q, r: self.on_voice(r, "offline"))
         self.create_timer(TICK_SEC, self.tick)
         self.get_logger().info(
             f"모드 노드 시작: 유닛 {len(self.units)}개 ({manifest_path}). "
@@ -202,6 +210,7 @@ class ModeNode(Node):
             auto_retried=self.retried_for is not None and self.retried_for == self.drive_entered,
             stop_pending_sec=None if self.stop_pending_since is None else now - self.stop_pending_since,
             stopping_sec=max(going_down) if going_down else None,
+            voice_mode=self.voice_mode(),
         )
 
     # ---- 주기 발행 ------------------------------------------------------------
@@ -305,6 +314,50 @@ class ModeNode(Node):
             ["stop", "--no-block", ml.DRIVE_TARGET],
             "주행 묶음을 내립니다(기본 묶음은 그대로).",
         )
+
+    def voice_mode(self) -> str:
+        try:
+            return ml.read_voice_mode(VOICE_MODE_PATH.read_text(encoding="utf-8"))
+        except OSError:
+            return "offline"
+
+    def on_detector_on(self, _request, response):
+        unit = self.manifest.get("detector", {}).get("unit", "vica-detector.service")
+        return self.run(
+            response, ml.detector_refusal(self.collect(), self.manifest),
+            ["start", "--no-block", unit],
+            "감지기를 켭니다(엔진을 올리는 데 10~20초).",
+        )
+
+    def on_detector_off(self, _request, response):
+        unit = self.manifest.get("detector", {}).get("unit", "vica-detector.service")
+        return self.run(
+            response, ml.detector_refusal(self.collect(), self.manifest),
+            ["stop", "--no-block", unit],
+            "감지기를 잠시 끕니다. 주행을 다시 켜면 다시 켜집니다.",
+        )
+
+    def on_voice(self, response, mode: str):
+        """고른 음성을 파일에 적고, 음성이 떠 있으면 다시 띄운다(말이 끊긴다)."""
+        snap = self.collect()
+        refusal = ml.voice_switch_refusal(snap)
+        label = "온라인" if mode == "online" else "오프라인 믿음"
+        if refusal:
+            response.success, response.message = False, refusal
+            self.get_logger().warn(f"[거부] 음성 {mode}: {refusal}")
+            return response
+        try:
+            VOICE_MODE_PATH.write_text(mode + "\n", encoding="utf-8")
+        except OSError as exc:
+            response.success, response.message = False, f"음성 설정을 저장하지 못했습니다: {exc}"
+            return response
+        unit = self.manifest.get("llm", {}).get("unit", "vica-llm.service")
+        if ml._state(snap, unit) in ("active", "activating"):
+            return self.run(response, None, ["restart", "--no-block", unit],
+                            f"음성을 {label}(으)로 다시 띄웁니다(약 10초).")
+        self.get_logger().info(f"[음성] 다음 기동부터 {mode}")
+        response.success, response.message = True, f"음성을 {label}(으)로 정했습니다. 주행을 켤 때 적용됩니다."
+        return response
 
     def on_nav2_restart(self, _request, response):
         snap = self.collect()

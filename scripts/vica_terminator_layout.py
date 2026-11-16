@@ -119,7 +119,8 @@ GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py -
 #   2a  주행 묶음: nav2 · posecheck · mission · handle · monitor. 부팅 때는 안 뜬다 —
 #       `systemctl --user start vica-drive.target` 으로(뒤에는 앱이) 띄운다
 #   2b  모드 노드: 앱이 /vica/mode/drive_start·drive_stop 으로 주행 묶음을 켜고 끈다
-STAGES = ("1a", "1b", "1c", "2a", "2b")
+#   2c  주행 묶음에 ⑮ 감지기 · 음성(⑫ 온라인 / ⑬ 오프라인 믿음, 앱에서 고름) — 2026-11-16
+STAGES = ("1a", "1b", "1c", "2a", "2b", "2c")
 
 AUTO = "auto"
 HOLD = "hold"
@@ -247,6 +248,24 @@ class Term:
 
 # 음성(⑫·⑬) 중복 검사 — launch 와 .venv 파이썬 노드(-m src.ros_*)를 명령줄로 찾는다(2026-10-12).
 VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && echo "[중복] 음성(⑫ 또는 ⑬)이 이미 켜져 있습니다 — 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요." || '
+
+# 음성 유닛(vica-llm, 2026-11-16). 앱에서 고른 값(모드 노드가 이 파일에 쓴다)으로 ⑫·⑬ 중 하나를 띄운다.
+# 없으면 오프라인 믿음. ⑬ 줄은 10-24 손 수정본 t_llm_local.rc 와 같다(Ollama 자동 켜기·로컬 규칙).
+# 중복 검사는 유닛 guard_cmdline 이 한다 — VOICE_DUP_CHECK 를 붙이지 않는다.
+VOICE_MODE_FILE = "$HOME/.config/vica-terminator/voice_mode"
+VOICE_UNIT_COMMAND = (
+    f'VICA_VOICE_MODE=$(cat "{VOICE_MODE_FILE}" 2>/dev/null || echo offline); '
+    "printf '음성: %s\\n' \"$VICA_VOICE_MODE\"; "
+    'if [ "$VICA_VOICE_MODE" = online ]; then '
+    "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; "
+    "else "
+    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\";"
+    " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & sleep 3; };"
+    " VICA_LOCAL_RULES=1 VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama"
+    " OLLAMA_HOST=http://localhost:11434 VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY="
+    " VICA_LLM_FALLBACK_MODEL= ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; }; "
+    "fi"
+)
 
 
 def build_terms() -> dict[str, Term]:
@@ -715,6 +734,13 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             workdir=VOICE,
             uses_map=True,
+            # 주행 묶음의 음성(2026-11-16). ⑫·⑬ 둘 다 이 유닛 하나로 — VOICE_UNIT_COMMAND 참고.
+            # 마이크·스피커를 쓰므로 죽어도 다시 띄우지 않는다(사람이 보고 앱에서 다시 고른다).
+            unit=Unit(
+                stage="2c", bundle="drive", restart="no", command=VOICE_UNIT_COMMAND,
+                guard_cmdline=r"^[^ ]*python3 [^ ]*ros2 launch launch/vica_voice\.launch\.py",
+                stop_sec=20,
+            ),
                     guard=("vica_llm_node", "vica_tts_node",),
 ),
         # ⑬ 자리(2026-10-12 사용자 요청): 쓰지 않는 push-to-talk STT 대신, 인터넷이 불안할 때 ⑫ 대신 켜는
@@ -918,6 +944,21 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             ros=False,
+            # 주행 묶음의 감지기(2026-11-16). 앱에서 잠시 끌 수 있다(/vica/mode/detector_off) —
+            # 주행을 다시 켜면 다시 켜진다. 엔진은 래퍼 기본(v7), 경비 엔진은 노드가 순찰 중 스스로 올린다.
+            unit=Unit(
+                stage="2c", bundle="drive",
+                command=(
+                    "docker exec vica_rs_container bash -lc"
+                    " '/workspaces/isaac_ros-dev/vica_detector'"
+                ),
+                wait=("container vica_rs_container 120",),
+                stop_pattern=(
+                    "^(/bin/bash /workspaces/isaac_ros-dev/vica_detector"
+                    "|python3 -m vica_perception\\.person_detector_node)"
+                ),
+                stop_sec=20,
+            ),
                     guard=("vica_detector",),
 ),
         "yolo": Term(
