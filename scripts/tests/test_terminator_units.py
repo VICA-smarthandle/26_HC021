@@ -8,6 +8,7 @@
 - 바퀴가 도는 유닛은 단계를 올려야만 묶음에 들어온다
 """
 import copy
+import json
 import os
 import re
 import shutil
@@ -381,6 +382,219 @@ class DriveBundle(unittest.TestCase):
         self.assertIn("vica-nav2.service", mission)
         self.assertRegex(mission, r"vica_wait\.sh proc bt_navigator \d+")
         self.assertRegex(self.read("vica-handle.service"), r"vica_wait\.sh proc ekf_node \d+")
+
+
+class SafetyOverUdpOnly(unittest.TestCase):
+    """safety·motor 는 FastDDS 공유메모리를 쓰지 않는다.
+
+    2026-11-14 주행 묶음을 내릴 때 safety_supervisor_node 가 영구히 멈췄다. 스택:
+    SharedMemTransport::push_discard 가 이미 끝난 Nav2 프로세스의 공유메모리 포트
+    (/dev/shm/fastrtps_port9203, deleted) 잠금을 기다리며 writer 잠금을 쥐었고, 주 스레드가
+    /cmd_vel_safe 발행에서 그 잠금을 기다렸다(~/vica_data/safety_deadlock_1114.txt).
+    UDP 전송은 받는 쪽 잠금을 잡지 않는다.
+    """
+
+    UDP = 'export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_udp_only.xml"'
+
+    def setUp(self):
+        self.terms = g.build_terms()
+
+    def test_safety_and_motor_use_the_udp_only_profile(self):
+        for key in ("safety", "motor"):
+            self.assertIn(self.UDP, run_script(key, self.terms[key]), key)
+
+    def test_no_other_unit_gives_up_shared_memory(self):
+        # 카메라·Nav2 같은 큰 데이터는 공유메모리가 CPU 를 아낀다.
+        for key, term in unit_terms().items():
+            if key not in ("safety", "motor"):
+                self.assertNotIn("FASTRTPS_DEFAULT_PROFILES_FILE", run_script(key, term), key)
+
+    def test_profile_is_set_before_any_node_starts(self):
+        text = run_script("safety", self.terms["safety"])
+        self.assertLess(text.index(self.UDP), text.index("ros2 launch vica_safety"))
+
+    def test_profile_has_only_udp_and_no_builtin_shared_memory(self):
+        import xml.etree.ElementTree as ET
+        ns = {"p": "http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles"}
+        root = ET.parse(g.AUTOSTART_SRC / "fastdds_udp_only.xml").getroot()
+        types = [t.text for t in root.findall(".//p:transport_descriptor/p:type", ns)]
+        self.assertEqual(types, ["UDPv4"])
+        participant = root.find(".//p:participant", ns)
+        self.assertEqual(participant.get("is_default_profile"), "true")
+        self.assertEqual(participant.find(".//p:useBuiltinTransports", ns).text, "false")
+
+    def test_profile_is_copied_beside_the_scripts(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        g.write_units(self.terms, "1c", ROS_WS, MAP_ID, tmp / "rc", tmp / "sd")
+        self.assertTrue((tmp / "rc" / "bin" / "fastdds_udp_only.xml").is_file())
+
+
+class DiscoveryServer(unittest.TestCase):
+    """--discovery-server: 노드들이 서로를 직접 찾지 않고 서버 하나를 거쳐 찾는다.
+
+    2026-11-16 실측: 주행 묶음을 켤 때마다 발견 메시지가 82만~139만 건 버려졌고(수신 버퍼 4 MB 여도),
+    그 회차에 map_server 가 'failed to send response ... client will not receive response' 로
+    응답을 못 보내 Nav2 위치추정 관리자가 3분 멈췄다. 옵션이 없으면 지금과 똑같아야 한다.
+    """
+
+    SERVER = 'export ROS_DISCOVERY_SERVER="127.0.0.1:11811"'
+    SUPER = 'export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_super_client.xml"'
+
+    def setUp(self):
+        self.terms = g.build_terms()
+        self.on = g.units_upto(self.terms, "2b", discovery=True)
+
+    def script(self, key, discovery=True):
+        return g.render_run_script(key, self.terms[key], ROS_WS, MAP_ID, discovery=discovery)
+
+    def test_server_unit_exists_only_when_asked(self):
+        self.assertIn("discovery", self.on)
+        self.assertEqual(self.on["discovery"].unit.bundle, "base")
+        self.assertNotIn("discovery", g.units_upto(self.terms, "2b"))
+
+    def test_server_listens_on_localhost_11811(self):
+        cmd = self.terms["discovery"].command
+        self.assertIn("fast-discovery-server", cmd)
+        self.assertIn("-i 0", cmd)
+        self.assertIn("-l 127.0.0.1", cmd)
+        self.assertIn("-p 11811", cmd)
+
+    def test_every_client_points_at_the_server(self):
+        for key in self.on:
+            if key == "discovery":
+                continue
+            self.assertIn(self.SERVER, self.script(key), key)
+        self.assertNotIn("ROS_DISCOVERY_SERVER", self.script("discovery"))
+
+    def test_nothing_changes_without_the_option(self):
+        for key in g.units_upto(self.terms, "2b"):
+            self.assertNotIn("ROS_DISCOVERY_SERVER", self.script(key, discovery=False), key)
+            self.assertNotIn("vica-discovery", g.render_unit(key, self.terms[key], Path("/x")), key)
+
+    def test_container_process_gets_the_server_too(self):
+        # docker exec 는 호스트 환경을 넘기지 않는다. 명령에 직접 실어야 한다.
+        self.assertIn("docker exec -e ROS_DISCOVERY_SERVER=127.0.0.1:11811 vica_rs_container",
+                      self.script("d455"))
+        self.assertNotIn("docker exec -e", self.script("d455", discovery=False))
+
+    def test_graph_watchers_see_every_node(self):
+        # 서버는 같은 토픽을 쓰는 노드끼리만 짝짓는다. 전체 노드 목록이 필요한 rosapi(앱의
+        # 중복 실행 감지)와 상태 감시 노드는 super client 여야 한다.
+        for key in ("app", "monitor"):
+            self.assertIn(self.SUPER, self.script(key), key)
+        for key in ("display", "nav2", "mission", "mode"):
+            self.assertNotIn("fastdds_super_client", self.script(key), key)
+        # safety·motor 는 UDP 전용 프로파일을 그대로 쓴다(환경 변수로 서버를 받는다).
+        self.assertIn("fastdds_udp_only.xml", self.script("safety"))
+        self.assertIn(self.SERVER, self.script("safety"))
+
+    def test_super_client_profile_points_at_server_zero(self):
+        import xml.etree.ElementTree as ET
+        ns = {"p": "http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles"}
+        root = ET.parse(g.AUTOSTART_SRC / "fastdds_super_client.xml").getroot()
+        self.assertEqual(root.find(".//p:discoveryProtocol", ns).text, "SUPER_CLIENT")
+        server = root.find(".//p:RemoteServer", ns)
+        self.assertEqual(server.get("prefix"), "44.53.00.5f.45.50.52.4f.53.49.4d.41")
+        self.assertEqual(server.find(".//p:address", ns).text, "127.0.0.1")
+        self.assertEqual(server.find(".//p:port", ns).text, "11811")
+
+    def test_clients_start_after_the_server(self):
+        unit = g.render_unit("display", self.terms["display"], Path("/x"), discovery=True)
+        self.assertRegex(unit, r"(?m)^After=.*vica-discovery\.service")
+        self.assertNotIn("After=vica-discovery", g.render_unit(
+            "discovery", self.terms["discovery"], Path("/x"), discovery=True))
+
+    def test_command_line_option(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        saved = (g.RC_DIR, g.SYSTEMD_USER_DIR)
+        g.RC_DIR, g.SYSTEMD_USER_DIR = tmp / "rc", tmp / "sd"
+        self.addCleanup(lambda: setattr(g, "RC_DIR", saved[0]) or setattr(g, "SYSTEMD_USER_DIR", saved[1]))
+        self.assertEqual(g.main(["--units", "--stage", "2b", "--discovery-server"]), 0)
+        self.assertTrue((tmp / "sd" / "vica-discovery.service").is_file())
+        self.assertIn("ROS_DISCOVERY_SERVER", (tmp / "rc" / "run_nav2.sh").read_text())
+        self.assertTrue((tmp / "rc" / "bin" / "fastdds_super_client.xml").is_file())
+        # 옵션 없이 다시 만들면 서버 유닛이 사라진다(되돌리기).
+        self.assertEqual(g.main(["--units", "--stage", "2b"]), 0)
+        self.assertFalse((tmp / "sd" / "vica-discovery.service").exists())
+        self.assertNotIn("ROS_DISCOVERY_SERVER", (tmp / "rc" / "run_nav2.sh").read_text())
+
+
+class Nav2BondTimeout(unittest.TestCase):
+    """유닛으로 띄우는 Nav2 는 lifecycle 관리자의 bond_timeout 을 4 s → 8 s 로 늘린다(사용자 11-16).
+
+    2026-11-14·16 실기: controller_server 등이 bond 4.00 s 안에 연결되지 않아 기동이 중단됐다
+    (원래 방식 14번 중 1번). 정상 회차에서도 연결에 5.9 s 걸린 적이 있다. 이 값은 nav2_params.yaml
+    로는 안 바뀐다(nav2_bringup 이 관리자에게 파일을 넘기지 않음) — 감싸는 launch 로 얹는다.
+    """
+
+    def setUp(self):
+        self.terms = g.build_terms()
+
+    def test_unit_runs_the_wrapper_with_the_same_arguments(self):
+        text = run_script("nav2", self.terms["nav2"])
+        self.assertIn('ros2 launch "$VICA_BIN/nav2_bond.launch.py" map:=$VICA_MAP_YAML use_route:=true', text)
+        # 칸은 그대로다.
+        self.assertIn("ros2 launch vica_nav2 nav2_map_test.launch.py", self.terms["nav2"].command)
+
+    def test_wrapper_is_copied_beside_the_scripts(self):
+        self.assertIn("nav2_bond.launch.py", g.HELPER_SCRIPTS)
+        self.assertTrue((g.AUTOSTART_SRC / "nav2_bond.launch.py").is_file())
+
+    def test_wrapper_sets_bond_timeout_before_including_nav2(self):
+        text = (g.AUTOSTART_SRC / "nav2_bond.launch.py").read_text(encoding="utf-8")
+        self.assertIn("BOND_TIMEOUT_SEC = 8.0", text)
+        self.assertIn('SetParameter(name="bond_timeout", value=BOND_TIMEOUT_SEC)', text)
+        self.assertLess(text.index("SetParameter(name="), text.index("IncludeLaunchDescription("))
+        self.assertIn('"nav2_map_test.launch.py"', text)
+
+
+class ModeNodeUnit(unittest.TestCase):
+    """모드 노드(2b). 부팅 때 뜨고, 앱이 부르면 주행 묶음을 켜고 끈다."""
+
+    def setUp(self):
+        self.terms = g.build_terms()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.rc_dir = self.tmp / "vica-terminator"
+        self.sd_dir = self.tmp / "systemd-user"
+        g.write_units(self.terms, "2b", ROS_WS, MAP_ID, self.rc_dir, self.sd_dir)
+
+    def test_stage_2b_adds_only_the_mode_node(self):
+        added = set(g.units_upto(self.terms, "2b")) - set(g.units_upto(self.terms, "2a"))
+        self.assertEqual(added, {"mode"})
+
+    def test_mode_node_starts_at_boot_and_comes_back_if_it_dies(self):
+        self.assertIn("vica-mode.service", (self.sd_dir / "vica-base.target").read_text())
+        self.assertIn("Restart=on-failure\n", (self.sd_dir / "vica-mode.service").read_text())
+
+    def test_mode_node_and_its_logic_are_copied_beside_the_scripts(self):
+        for name in ("vica_mode_node.py", "mode_logic.py"):
+            self.assertTrue((self.rc_dir / "bin" / name).is_file(), name)
+        self.assertIn('"$VICA_BIN/vica_mode_node.py"', (self.rc_dir / "run_mode.sh").read_text())
+
+    def test_manifest_lists_each_unit_with_the_names_that_prove_it_alive(self):
+        manifest = json.loads((self.rc_dir / "units.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["nav2"]["unit"], "vica-nav2.service")
+        self.assertEqual(manifest["nav2"]["bundle"], "drive")
+        self.assertIn("ekf_node", manifest["nav2"]["guard"])
+        self.assertIn("mission_manager", manifest["mission"]["guard"])
+        self.assertTrue(manifest["app"]["guard_cmdline"].startswith("^"))
+        self.assertEqual(manifest["motor"]["bundle"], "base")
+        self.assertNotIn("teleop", manifest)
+
+    def test_manifest_matches_what_the_mode_logic_reads(self):
+        from scripts.autostart import mode_logic as ml
+        manifest = json.loads((self.rc_dir / "units.json").read_text(encoding="utf-8"))
+        idle = ml.Snapshot(
+            units={e["unit"]: ("active", "running", "success")
+                   for e in manifest.values() if e["bundle"] == "base"},
+            procs={}, can_up=True,
+        )
+        # 기본 묶음 유닛이 다 떠 있어도 노드 프로세스가 없으면 그 사실이 보여야 한다.
+        status = ml.derive_status(idle, manifest)
+        self.assertIn("motor", status["missing_nodes"])
 
 
 class WriteUnits(unittest.TestCase):

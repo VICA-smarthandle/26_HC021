@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Discovery Server 를 쓸 때(생성기 discovery-server 옵션) 전체 노드 목록이 필요한 유닛용 프로파일.
+     서버는 같은 토픽을 쓰는 노드끼리만 짝짓는다. rosapi(앱의 중복 실행 감지)·상태 감시처럼
+     "지금 떠 있는 노드 전부"를 봐야 하는 쪽은 SUPER_CLIENT 로 서버의 모든 정보를 받는다.
+     서버: fast-discovery-server -i 0 -l 127.0.0.1 -p 11811 (id 0 의 GUID 접두사 = 아래 prefix). -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <participant profile_name="vica_super_client" is_default_profile="true">
+    <rtps>
+      <builtin>
+        <discovery_config>
+          <discoveryProtocol>SUPER_CLIENT</discoveryProtocol>
+          <discoveryServersList>
+            <RemoteServer prefix="44.53.00.5f.45.50.52.4f.53.49.4d.41">
+              <metatrafficUnicastLocatorList>
+                <locator>
+                  <udpv4>
+                    <address>127.0.0.1</address>
+                    <port>11811</port>
+                  </udpv4>
+                </locator>
+              </metatrafficUnicastLocatorList>
+            </RemoteServer>
+          </discoveryServersList>
+        </discovery_config>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>

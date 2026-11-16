@@ -47,6 +47,7 @@ STAGES 주석을 본다. 1c 부터 바퀴가 돌 수 있다.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
@@ -100,7 +101,15 @@ SYSTEMD_USER_DIR = HOME / ".config" / "systemd" / "user"
 AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
 # 유닛이 부르는 도우미. 저장소 경로가 아니라 RC_DIR/bin 의 사본을 부른다 — 작업 트리가
 # 다른 브랜치로 바뀌어도 부팅이 깨지지 않게.
-HELPER_SCRIPTS = ("vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh")
+HELPER_SCRIPTS = (
+    "vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh",
+    "vica_mode_node.py", "mode_logic.py", "fastdds_udp_only.xml", "fastdds_super_client.xml",
+    "nav2_bond.launch.py",
+)
+# --discovery-server(2026-11-16 시험): 노드가 서로를 직접 찾지 않고 이 서버를 거친다.
+DISCOVERY_SERVER = "127.0.0.1:11811"
+# 모드 노드가 읽는 유닛 목록. 유닛마다 "살아 있다"를 증명하는 프로세스 이름이 들어 있다.
+MANIFEST_NAME = "units.json"
 GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py --units"
 
 # 켜는 순서. 재부팅으로 하나씩 확인하며 올린다. 단계를 적지 않으면 유닛을 만들지 않는다.
@@ -109,7 +118,8 @@ GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py -
 #   1c  safety · motor — 여기부터 바퀴가 돌 수 있다
 #   2a  주행 묶음: nav2 · posecheck · mission · handle · monitor. 부팅 때는 안 뜬다 —
 #       `systemctl --user start vica-drive.target` 으로(뒤에는 앱이) 띄운다
-STAGES = ("1a", "1b", "1c", "2a")
+#   2b  모드 노드: 앱이 /vica/mode/drive_start·drive_stop 으로 주행 묶음을 켜고 끈다
+STAGES = ("1a", "1b", "1c", "2a", "2b")
 
 AUTO = "auto"
 HOLD = "hold"
@@ -145,6 +155,9 @@ class Unit:
         guard_cmdline: str = "",
         stop_pattern: str = "",
         stop_sec: int = 20,
+        dds_udp_only: bool = False,
+        discovery_only: bool = False,
+        super_client: bool = False,
     ) -> None:
         # 이 유닛이 묶음에 들어오는 단계(STAGES).
         self.stage = stage
@@ -172,6 +185,14 @@ class Unit:
         # 걸린 프로세스는 SIGKILL 까지 받으므로, 글자만 담은 다른 셸이 걸리면 안 된다.
         self.stop_pattern = stop_pattern
         self.stop_sec = stop_sec
+        # FastDDS 공유메모리를 끄고 UDP 만 쓴다(fastdds_udp_only.xml). safety·motor 만 —
+        # 끝난 프로세스의 공유메모리 잠금에 safety 가 영구히 멈춘 일(2026-11-14) 때문.
+        self.dds_udp_only = dds_udp_only
+        # --discovery-server 일 때만 있는 유닛(서버 자신).
+        self.discovery_only = discovery_only
+        # --discovery-server 일 때 전체 노드 목록을 받는다(fastdds_super_client.xml).
+        # 서버는 같은 토픽을 쓰는 노드끼리만 짝지으므로 rosapi·상태 감시는 이것이 필요하다.
+        self.super_client = super_client
 
 
 class Term:
@@ -308,7 +329,10 @@ def build_terms() -> dict[str, Term]:
             mode=AUTO,
             # emergency_stop_node 는 CAN 소켓을 기동 때 한 번만 연다. can1 이 생긴 뒤에 띄운다.
             # 죽으면 자동으로 다시 띄우지 않는다 — safety 없이는 아무것도 안 움직이고, 사람이 본다.
-            unit=Unit(stage="1c", restart="no", wait=("path /sys/class/net/can1 90",)),
+            unit=Unit(
+                stage="1c", restart="no", wait=("path /sys/class/net/can1 90",),
+                dds_udp_only=True,
+            ),
                     guard=("emergency_stop_", "safety_supervis", "app_emergency_n",),
 ),
         # ------------------------------------------------------------------
@@ -330,6 +354,7 @@ def build_terms() -> dict[str, Term]:
             unit=Unit(
                 stage="1c", restart="no", after=("safety",),
                 wait=("canup can1 90", "proc safety_supervis 60"),
+                dds_udp_only=True,
             ),
                     guard=("mdrobot_can_ke", "keyboard_knob",),
             cpp_overlay=CPP_MOTOR,
@@ -374,6 +399,16 @@ def build_terms() -> dict[str, Term]:
                 stop_sec=25,
             ),
         ),
+        "discovery": Term(
+            title="Discovery Server (자동 기동 전용, --discovery-server)",
+            note=(
+                "노드들이 서로를 직접 찾지 않고 이 서버를 거쳐 찾는다. 주행 묶음을 켤 때 발견",
+                "메시지가 82만~139만 건 버려지고 Nav2 기동이 멈춘 일(2026-11-16) 때문의 시험.",
+            ),
+            command=f"fast-discovery-server -i 0 -l 127.0.0.1 -p {DISCOVERY_SERVER.split(':')[1]}",
+            mode=HOLD,
+            unit=Unit(stage="1a", discovery_only=True, guard=("fast-discovery-",), stop_sec=10),
+        ),
         "container": Term(
             title="컨테이너 (자동 기동 전용)",
             note=(
@@ -384,6 +419,18 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             ros=False,
             unit=Unit(stage="1b", stop_sec=10),
+        ),
+        "mode": Term(
+            title="모드 노드 (자동 기동 전용)",
+            note=(
+                "앱이 부르는 /vica/mode/drive_start · drive_stop · nav2_restart 로 주행 묶음을",
+                "켜고 끈다. 상태는 /vica/mode_status. 프로세스는 systemd 가 소유한다 —",
+                "이 노드가 죽어도 주행 묶음은 그대로다.",
+            ),
+            command='python3 "$VICA_BIN/vica_mode_node.py"',
+            mode=HOLD,
+            # comm 이 python3 라 명령줄로 막는다.
+            unit=Unit(stage="2b", guard_cmdline=r"^[^ ]*python3 [^ ]*vica_mode_node\.py"),
         ),
         "imu": Term(
             title="⑦ imu",
@@ -494,8 +541,10 @@ def build_terms() -> dict[str, Term]:
             # 주행 묶음. 이 launch 가 EKF·encoder 를 함께 띄우므로, 그 둘이나 SLAM 이 이미 떠
             # 있으면 시작하지 않는다(/odom 발행자 2개 — 08-12 위치 발산). 내릴 때 노드가
             # 많아 시한을 길게 준다. 죽어도 자동으로 다시 띄우지 않는다.
+            # bond_timeout 을 8 s 로 늘린 감싸는 launch 로 띄운다(nav2_bond.launch.py, 사용자 11-16).
             unit=Unit(
                 stage="2a", bundle="drive", restart="no",
+                command='ros2 launch "$VICA_BIN/nav2_bond.launch.py" map:=$VICA_MAP_YAML use_route:=true',
                 guard=("ekf_node", "encoder_feedbac", "cartographer_no"),
                 stop_sec=30,
             ),
@@ -602,6 +651,7 @@ def build_terms() -> dict[str, Term]:
             unit=Unit(
                 stage="1a",
                 guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
+                super_client=True,
             ),
                     guard=("rosbridge_webso",),
 ),
@@ -619,7 +669,7 @@ def build_terms() -> dict[str, Term]:
                     guard=("robot_health_mo", "external_diagno", "aggregator_node",),
             # navigation 이 필수 구성요소라 주행 묶음에 둔다. 기본 묶음에 두면 지도 그리기
             # 중에 늘 결함으로 뜬다.
-            unit=Unit(stage="2a", bundle="drive", after=("mission",)),
+            unit=Unit(stage="2a", bundle="drive", after=("mission",), super_client=True),
 ),
         "gui": Term(
             title="app GUI",
@@ -1445,12 +1495,27 @@ RUN_TEMPLATE = """\
 # 끝나는 값: 0 멈추라는 신호를 받음 · 70 스스로 끝남 · 75 이미 떠 있어 거부
 trap 'VICA_STOPPING=1' INT TERM
 VICA_BIN="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/bin"
-{env_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}printf '실행: %s\\n' {command_q}
+{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}printf '실행: %s\\n' {command_q}
 {command}
 _vica_rc=$?
 [ -n "$VICA_STOPPING" ] && exit 0
 [ "$_vica_rc" = 0 ] && exit 70
 exit "$_vica_rc"
+"""
+
+DDS_UDP_ONLY_BLOCK = """\
+# 공유메모리 없이 UDP 만. 끝난 프로세스의 공유메모리 잠금에 safety 가 멈추지 않게(2026-11-14).
+export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_udp_only.xml"
+"""
+
+DISCOVERY_CLIENT_BLOCK = """\
+# Discovery Server 를 거쳐 다른 노드를 찾는다(--discovery-server, 2026-11-16 시험).
+export ROS_DISCOVERY_SERVER="{server}"
+"""
+
+SUPER_CLIENT_BLOCK = """\
+# 전체 노드 목록이 필요하다 — 서버의 모든 정보를 받는 super client.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_super_client.xml"
 """
 
 UNIT_GUARD_BLOCK = """\
@@ -1490,11 +1555,21 @@ def run_name(key: str) -> str:
     return f"run_{key}.sh"
 
 
-def render_run_script(key: str, term: Term, ros_ws: Path, fallback_map_id: str) -> str:
+def render_run_script(
+    key: str, term: Term, ros_ws: Path, fallback_map_id: str, discovery: bool = False
+) -> str:
     """유닛이 실행하는 스크립트. 칸의 rc 와 같은 환경 블록으로 같은 명령을 띄운다."""
     unit = term.unit
     ros_block, overlay_block, cd_block = _env_blocks(term, ros_ws, fallback_map_id)
     command = unit.command or term.command
+    discovery_block = ""
+    if discovery and not unit.discovery_only:
+        discovery_block = DISCOVERY_CLIENT_BLOCK.format(server=DISCOVERY_SERVER)
+        if unit.super_client:
+            discovery_block += SUPER_CLIENT_BLOCK
+        # docker exec 는 호스트 환경을 넘기지 않는다. 컨테이너 안 프로세스에 직접 싣는다.
+        command = command.replace(
+            "docker exec ", f"docker exec -e ROS_DISCOVERY_SERVER={DISCOVERY_SERVER} ")
 
     names = " ".join(f'"{n}"' for n in (*term.guard, *unit.guard))
     guard_block = UNIT_GUARD_BLOCK.format(names=names) if names else ""
@@ -1508,6 +1583,8 @@ def render_run_script(key: str, term: Term, ros_ws: Path, fallback_map_id: str) 
         title=term.title,
         key=key,
         env_block=NONINTERACTIVE_ENV_BLOCK,
+        dds_block=DDS_UDP_ONLY_BLOCK if unit.dds_udp_only else "",
+        discovery_block=discovery_block,
         helper_block=HELPER_BLOCK + UNIT_HELPER_BLOCK,
         ros_block=ros_block,
         overlay_block=overlay_block,
@@ -1519,7 +1596,7 @@ def render_run_script(key: str, term: Term, ros_ws: Path, fallback_map_id: str) 
     )
 
 
-def render_unit(key: str, term: Term, rc_dir: Path) -> str:
+def render_unit(key: str, term: Term, rc_dir: Path, discovery: bool = False) -> str:
     """systemd 사용자 유닛 파일."""
     unit = term.unit
     bin_dir = rc_dir / "bin"
@@ -1532,6 +1609,8 @@ def render_unit(key: str, term: Term, rc_dir: Path) -> str:
         f"PartOf=vica-{unit.bundle}.target",
     ]
     after = [unit_name(k) for k in unit.after]
+    if discovery and not unit.discovery_only:
+        after.append("vica-discovery.service")   # 서버가 먼저(순서만)
     if unit.bundle != BOOT_BUNDLE:
         # 기본 묶음(센서·safety·motor)이 먼저다. 순서만 건다.
         after.insert(0, f"vica-{BOOT_BUNDLE}.target")
@@ -1591,7 +1670,26 @@ def render_target(bundle: str, keys: list[str]) -> str:
     return "\n".join(lines)
 
 
-def units_upto(terms: dict[str, Term], stage: str) -> dict[str, Term]:
+def render_manifest(chosen: dict[str, Term]) -> str:
+    """모드 노드가 읽는 유닛 목록(units.json). 유닛마다 살아 있음을 증명하는 프로세스 이름.
+
+    ros2 launch 는 자식 노드가 죽어도 살아 있어 유닛은 active 로 남는다. 그래서 모드 노드는
+    유닛 상태와 함께 이 이름의 프로세스가 있는지 본다. 이름은 중복 검사와 같은 것을 쓴다.
+    """
+    entries = {
+        key: {
+            "unit": unit_name(key),
+            "bundle": term.unit.bundle,
+            "guard": [*term.guard, *term.unit.guard],
+            "guard_cmdline": term.unit.guard_cmdline,
+            "restart": term.unit.restart,
+        }
+        for key, term in chosen.items()
+    }
+    return json.dumps(entries, ensure_ascii=False, indent=2) + "\n"
+
+
+def units_upto(terms: dict[str, Term], stage: str, discovery: bool = False) -> dict[str, Term]:
     """그 단계까지 켜는 유닛."""
     if stage not in STAGES:
         raise SystemExit(f"[오류] 모르는 단계 '{stage}'. 쓸 수 있는 단계: {', '.join(STAGES)}")
@@ -1600,6 +1698,7 @@ def units_upto(terms: dict[str, Term], stage: str) -> dict[str, Term]:
         key: term
         for key, term in terms.items()
         if term.unit and STAGES.index(term.unit.stage) <= limit
+        and (discovery or not term.unit.discovery_only)
     }
     for key, term in chosen.items():
         for name in term.unit.after:
@@ -1639,13 +1738,14 @@ def write_units(
     fallback_map_id: str,
     rc_dir: Path,
     systemd_dir: Path,
+    discovery: bool = False,
 ) -> list[Path]:
     """실행 스크립트 · 유닛 · target · 도우미 사본을 쓴다.
 
     칸의 rc(`t_*.rc`)와 terminator config 는 건드리지 않는다. 손으로 고친 rc 가 있다.
     단계를 내리면 그 위 단계의 유닛 파일은 지운다 — 이 스크립트가 만든 것만.
     """
-    chosen = units_upto(terms, stage)
+    chosen = units_upto(terms, stage, discovery)
     bin_dir = rc_dir / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     systemd_dir.mkdir(parents=True, exist_ok=True)
@@ -1658,9 +1758,10 @@ def write_units(
 
     for key, term in chosen.items():
         script = rc_dir / run_name(key)
-        _write_atomic(script, render_run_script(key, term, ros_ws, fallback_map_id), 0o755)
+        _write_atomic(
+            script, render_run_script(key, term, ros_ws, fallback_map_id, discovery), 0o755)
         unit_file = systemd_dir / unit_name(key)
-        _write_atomic(unit_file, render_unit(key, term, rc_dir))
+        _write_atomic(unit_file, render_unit(key, term, rc_dir, discovery))
         written += [script, unit_file]
 
     for bundle in sorted({term.unit.bundle for term in chosen.values()}):
@@ -1668,6 +1769,10 @@ def write_units(
         target = systemd_dir / f"vica-{bundle}.target"
         _write_atomic(target, render_target(bundle, keys))
         written.append(target)
+
+    manifest = rc_dir / MANIFEST_NAME
+    _write_atomic(manifest, render_manifest(chosen))
+    written.append(manifest)
 
     stale = [
         *systemd_dir.glob("vica-*.service"),
@@ -1886,6 +1991,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=STAGES,
         help="--units 로 켤 단계. 1a 바퀴 무관 · 1b 카메라 쪽 · 1c safety·motor(바퀴).",
     )
+    parser.add_argument(
+        "--discovery-server",
+        action="store_true",
+        help="--units 와 함께: 노드들이 FastDDS Discovery Server(127.0.0.1:11811)를 거쳐 서로를"
+        " 찾게 한다(2026-11-16 시험). 빼고 다시 만들면 원래대로.",
+    )
     args = parser.parse_args(argv)
     if args.units and not args.stage:
         # 단계를 안 적었다고 motor 까지 켜지면 안 된다.
@@ -1938,14 +2049,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.units:
-        chosen = units_upto(terms, args.stage)
+        chosen = units_upto(terms, args.stage, args.discovery_server)
         if args.dry_run:
             print(f"단계 {args.stage} — 유닛 {len(chosen)}개 예정: {SYSTEMD_USER_DIR}")
             for key, term in chosen.items():
                 print(f"  {unit_name(key):28s} {term.unit.stage}  Restart={term.unit.restart}")
             print("(dry-run: 아무것도 쓰지 않았다)")
             return 0
-        write_units(terms, args.stage, args.ros_ws, args.map_id, RC_DIR, SYSTEMD_USER_DIR)
+        write_units(
+            terms, args.stage, args.ros_ws, args.map_id, RC_DIR, SYSTEMD_USER_DIR,
+            args.discovery_server,
+        )
+        if args.discovery_server:
+            print(f"Discovery Server 사용: {DISCOVERY_SERVER} (빼고 다시 만들면 원래대로)")
         print(f"단계 {args.stage} — 유닛 {len(chosen)}개: {SYSTEMD_USER_DIR}")
         print(f"실행 스크립트 · 도우미: {RC_DIR}")
         print("칸의 rc 와 terminator config 는 건드리지 않았다.")
