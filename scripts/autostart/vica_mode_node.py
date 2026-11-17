@@ -534,7 +534,8 @@ class ModeNode(Node):
         """고른 음성을 파일에 적고, 음성이 떠 있으면 다시 띄운다(말이 끊긴다)."""
         snap = self.collect()
         refusal = ml.voice_switch_refusal(snap)
-        label = "온라인" if mode == "online" else "오프라인 믿음"
+        # 2026-11-17 사용자: '음성을 로컬 LLM으로 다시 띄웁니다.' (앱 고르기 칸 이름과 같게)
+        target = "외부 API로" if mode == "online" else "로컬 LLM으로"
         if refusal:
             response.success, response.message = False, refusal
             self.get_logger().warn(f"[거부] 음성 {mode}: {refusal}")
@@ -547,9 +548,9 @@ class ModeNode(Node):
         unit = self.manifest.get("llm", {}).get("unit", "vica-llm.service")
         if ml._state(snap, unit) in ("active", "activating"):
             return self.run(response, None, ["restart", "--no-block", unit],
-                            f"음성을 {label}(으)로 다시 띄웁니다(약 10초).")
+                            f"음성을 {target} 다시 띄웁니다.")
         self.get_logger().info(f"[음성] 다음 기동부터 {mode}")
-        response.success, response.message = True, f"음성을 {label}(으)로 정했습니다. 주행을 켤 때 적용됩니다."
+        response.success, response.message = True, f"음성을 {target} 정했습니다. 주행을 켤 때 적용됩니다."
         return response
 
     # ---- 주행 지도 바꾸기(사용자 11-17) ------------------------------------------
