@@ -669,13 +669,13 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             uses_map=True,
-            # 칸과 같은 명령으로 띄운다. map_yaml 을 빼면 자동 감지가 될 것 같지만, 이 launch 는
-            # 빈 값을 `-p map_yaml:=` 로 넘기고 rcl 이 해석하지 못해 vica_status_app_node 가
-            # 죽는다(2026-11-14 실기 — launch 는 살아 있어 유닛은 active 로 보였다).
-            # 그래서 부팅 때 지도가 고정된다. 지도를 새로 그린 뒤에는 이 유닛을 다시 띄워야
-            # /robot_status 의 map_id 가 바뀐다.
+            # 유닛은 map_yaml 없이 띄운다 — 상태 노드가 map_server 의 yaml_filename 을 계속 읽어
+            # 앱에서 주행 지도를 바꾸면 /robot_status 의 map_id 도 따라간다(11-17). 11-14 에는 빈 값이
+            # `-p map_yaml:=` 로 넘어가 상태 노드가 죽어서 칸 명령(부팅 지도 고정)을 썼는데, 그 수리
+            # (앱 9ab04ac = 운영 c9286ea)가 운영 브랜치에 들어왔다. 칸은 예전 명령 그대로다.
             unit=Unit(
                 stage="1a",
+                command=f"ros2 launch {SUPERVISOR}/ros2/supervisor_bringup.launch.py",
                 guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
                 super_client=True,
                 # UDP 전용: 앱의 비상정지·모드 전환이 여기를 거쳐 멈추면 안 되고, 다루는 데이터가 작다
@@ -1409,6 +1409,12 @@ fi
 printf '\\n'
 """
 
+# 유닛 실행 스크립트에만 붙인다(rc 는 그대로). 모드 노드가 이번 기동이 읽은 지도를 저널에서 찾는다 —
+# 터미널에서 CURRENT_MAP 만 바꿔 Nav2 와 지도가 어긋난 것을 알리고, 지도를 바꿀 때 다시 띄울지 가린다(11-17).
+UNIT_MAP_MARK = """\
+printf '[vica-map] %s\\n' "$VICA_MAP_ID"
+"""
+
 GUARD_BLOCK = """\
 vica_guard {names} || return 2>/dev/null || exit 0
 """
@@ -1649,7 +1655,7 @@ def render_run_script(
         ros_block=ros_block,
         overlay_block=overlay_block,
         cd_block=cd_block,
-        map_block=MAP_BLOCK if term.uses_map else "",
+        map_block=MAP_BLOCK + UNIT_MAP_MARK if term.uses_map else "",
         guard_block=guard_block,
         nice_block=NICE_BLOCK.format(nice=unit.nice) if unit.nice is not None else "",
         command_q=shell_quote(command),

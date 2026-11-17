@@ -577,3 +577,115 @@ class VoiceEvents(unittest.TestCase):
 
     def test_unrelated_lines_are_ignored(self):
         self.assertEqual(self.run_lines(["음성: online", "[vica_tts-2] 고정 문장 워밍업 완료: 39건"]), [])
+
+
+MAP_MANIFEST = dict(MANIFEST, posecheck={"unit": "vica-posecheck.service", "bundle": "drive",
+                                         "guard": ["pose_bootstrap"], "guard_cmdline": ""})
+
+
+def map_snapshot(**overrides):
+    """주행이 떠 있고 멈춰 대기 중. nav2·mission·llm·posecheck 가 4층 복도 지도로 떠 있다."""
+    units = {"vica-llm.service": ("active", "running", "success"),
+             "vica-posecheck.service": ("active", "running", "success")}
+    units.update(overrides.pop("units", {}))
+    hits = {"^[^ ]*python3 [^ ]*ros2 launch launch/vica_voice\\.launch\\.py": 1}
+    hits.update(overrides.pop("cmdline_hits", {}))
+    procs = {"pose_bootstrap": 1}
+    procs.update(overrides.pop("procs", {}))
+    overrides.setdefault("dialog_state", "idle")
+    overrides.setdefault("current_map", "map_1116_203022")
+    overrides.setdefault("running_maps", {"nav2": "map_1116_203022", "mission": "map_1116_203022",
+                                          "llm": "map_1116_203022"})
+    return snapshot(units=units, cmdline_hits=hits, procs=procs, **overrides)
+
+
+class MapChange(unittest.TestCase):
+    """주행 지도 바꾸기(사용자 11-17): 멈춰 대기 중이거나 일시정지 중일 때만, 지도를 쥔 유닛만 다시 띄운다."""
+
+    def refusal(self, snap, map_id="map_1103_142858", problem=None):
+        state = ml.derive_status(snap, MAP_MANIFEST)["state"]
+        return ml.map_change_refusal(snap, MAP_MANIFEST, state, map_id, problem)
+
+    def test_waiting_or_paused_robot_may_change(self):
+        for dialog in ("idle", "arrived", "failed", "paused", "paused_handle", "patrol_paused"):
+            self.assertIsNone(self.refusal(map_snapshot(dialog_state=dialog)), dialog)
+
+    def test_busy_robot_may_not_change_and_says_why(self):
+        cases = {"navigating": "안내 중", "approaching": "사람 접근 중", "patrolling": "순찰 중",
+                 "estopped": "비상정지 중", "grip_wait": "손잡이 잡기 대기 중", "waiting": "도착 뒤"}
+        for dialog, word in cases.items():
+            reason = self.refusal(map_snapshot(dialog_state=dialog))
+            self.assertIn(word, reason or "", dialog)
+
+    def test_moving_or_unknown_robot_may_not_change(self):
+        self.assertIn("움직이는", self.refusal(map_snapshot(robot_moving=True)))
+        self.assertIn("받지 못함", self.refusal(map_snapshot(dialog_state=None)))
+        self.assertIn("받지 못함", self.refusal(map_snapshot(robot_moving=None)))
+
+    def test_not_while_drive_is_starting_or_stopping(self):
+        self.assertIn("켜거나 끄는", self.refusal(map_snapshot(nav2_phase="starting")))
+        self.assertIn("켜거나 끄는", self.refusal(map_snapshot(stop_pending_sec=3.0)))
+
+    def test_not_while_drawing_a_map(self):
+        snap = idle_snapshot(mapping_state="mapping", dialog_state=None, robot_moving=None)
+        self.assertIn("지도 그리는", self.refusal(snap))
+
+    def test_drive_off_needs_no_robot_state(self):
+        # 주행이 꺼져 있으면 미션도 없다. 파일만 바꾸고 다음에 켤 때 읽는다.
+        snap = idle_snapshot(dialog_state=None, robot_moving=None)
+        self.assertIsNone(self.refusal(snap))
+        self.assertEqual(ml.map_restart_units(snap, MAP_MANIFEST, "map_1103_142858"), [])
+
+    def test_bad_name_or_missing_files_are_refused(self):
+        self.assertIn("올바르지", self.refusal(map_snapshot(), "../etc"))
+        self.assertIn("올바르지", self.refusal(map_snapshot(), ""))
+        self.assertEqual(self.refusal(map_snapshot(), problem="지도 파일 없음"), "지도 파일 없음")
+        # 금지구역 마스크는 yaml·pgm 짝이 있어 파일 검사만으로는 지도처럼 보인다.
+        self.assertIn("주행 지도가 아님", self.refusal(map_snapshot(), "map_1116_203022_keepout"))
+
+    def test_restarts_every_unit_that_holds_the_map(self):
+        units = ml.map_restart_units(map_snapshot(), MAP_MANIFEST, "map_1103_142858")
+        self.assertEqual(units, ["vica-nav2.service", "vica-mission.service", "vica-llm.service",
+                                 "vica-posecheck.service"])
+
+    def test_handle_detector_and_safety_are_left_alone(self):
+        manifest = dict(MAP_MANIFEST, handle={"unit": "vica-handle.service", "bundle": "drive",
+                                              "guard": [], "guard_cmdline": ""})
+        snap = map_snapshot(units={"vica-handle.service": ("active", "running", "success"),
+                                   "vica-detector.service": ("active", "running", "success")})
+        units = ml.map_restart_units(snap, manifest, "map_1103_142858")
+        self.assertNotIn("vica-handle.service", units)
+        self.assertNotIn("vica-detector.service", units)
+        self.assertNotIn("vica-motor.service", units)
+
+    def test_nothing_to_restart_when_units_already_run_that_map(self):
+        # ⑦ '되돌리기' — 파일만 유닛이 쓰는 지도로 되돌린다.
+        snap = map_snapshot(current_map="map_1029_074730")
+        self.assertEqual(ml.map_restart_units(snap, MAP_MANIFEST, "map_1116_203022"), [])
+
+    def test_unknown_running_map_restarts(self):
+        snap = map_snapshot(running_maps={})
+        self.assertEqual(len(ml.map_restart_units(snap, MAP_MANIFEST, "map_1116_203022")), 4)
+
+    def test_status_carries_map_fields(self):
+        status = ml.derive_status(map_snapshot(), MAP_MANIFEST)
+        self.assertEqual(status["current_map_id"], "map_1116_203022")
+        self.assertEqual(status["running_maps"]["nav2"], "map_1116_203022")
+        self.assertFalse(status["map_mismatch"])
+        self.assertEqual(status["map_change_block"], "")
+        busy = ml.derive_status(map_snapshot(dialog_state="navigating"), MAP_MANIFEST)
+        self.assertIn("안내 중", busy["map_change_block"])
+
+    def test_file_changed_behind_the_drive_is_a_mismatch(self):
+        # ⑦ 터미널에서 CURRENT_MAP 만 바꿨다. Nav2 는 옛 지도로 떠 있다.
+        status = ml.derive_status(map_snapshot(current_map="map_1029_074730"), MAP_MANIFEST)
+        self.assertTrue(status["map_mismatch"])
+        idle = ml.derive_status(idle_snapshot(current_map="map_1029_074730",
+                                              running_maps={"nav2": "map_1116_203022"}), MAP_MANIFEST)
+        self.assertFalse(idle["map_mismatch"])
+
+    def test_reads_the_map_mark_from_the_journal(self):
+        lines = ["\x1b[0;36m현재 지도\x1b[0m 4층 복도 (map_1116_203022 · maps/CURRENT_MAP)",
+                 "[vica-map] map_1116_203022", "실행: ros2 launch …"]
+        self.assertEqual(ml.parse_map_mark(lines), "map_1116_203022")
+        self.assertEqual(ml.parse_map_mark(["현재 지도 x"]), "")

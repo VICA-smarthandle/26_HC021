@@ -6,6 +6,8 @@
     /vica/mode/nav2_restart    std_srvs/Trigger   Nav2 유닛만 다시 띄움(기동 실패 때)
     /vica/mode/detector_on|off std_srvs/Trigger   ⑮ 감지기만 켜고 끔(잠시 끄기, 주행을 다시 켜면 켜짐)
     /vica/mode/voice_online|offline  Trigger      음성을 ⑫ 온라인 / ⑬ 오프라인 믿음으로(voice_mode 파일)
+    /vica/mode/map_request     std_msgs/String    JSON {request_id, map_id} — 주행 지도 바꾸기(11-17).
+                                                  결과는 mode_status.map_change(Trigger 는 인자가 없다)
     /vica/mode_status          std_msgs/String    JSON, 2초마다 + TRANSIENT_LOCAL
 
 프로세스를 직접 소유하지 않는다. systemctl --user 에 맡기고 결과는 매 초 다시 읽는다.
@@ -49,6 +51,11 @@ VOICE_JOURNAL_GREP = "음성: |\\[LLM\\]|LLM 워밍업|Realtime 연결 예열"
 VOICE_EVENT_REPEAT_SEC = 60.0
 NAV2_UNIT = ml.NAV2_UNIT
 NAV2_JOURNAL_GREP = "lifecycle_manager_(navigation|localization)|Please set the initial pose"
+# 주행 지도. 실행 스크립트(MAP_BLOCK)와 같은 곳 — 모드 유닛도 같은 환경 블록으로 뜬다.
+MAPS_DIR = Path(os.environ.get("VICA_ROS_WS", str(Path.home() / "VICA-smarthandle/vica_ros2_ws"))) / "maps"
+CURRENT_MAP = MAPS_DIR / "CURRENT_MAP"
+# 유닛이 기동 때 찍는 '[vica-map] <id>'(생성기 UNIT_MAP_MARK). 이번 호출에서 한 번 찾으면 기억한다.
+MAP_JOURNAL_GREP = "\\[vica-map\\] "
 CAN_FLAGS = Path("/sys/class/net/can1/flags")
 FRESH_SEC = 3.0
 SYSTEMCTL_TIMEOUT = 5.0
@@ -79,6 +86,11 @@ class ModeNode(Node):
         self.safety: tuple[str, float] | None = None
         self.mapping: tuple[str, float] | None = None
         self.moving: tuple[bool, float] | None = None
+        self.dialog: tuple[str, float] | None = None
+        # 유닛 호출 ID → 그 기동이 읽은 지도 id. 찾은 것만 담는다.
+        self.map_marks: dict[str, str] = {}
+        # 마지막 지도 바꾸기 요청의 결과(mode_status.map_change). 노드가 다시 뜨면 잊는다.
+        self.map_change: dict | None = None
         self.nav2_cache: tuple[str, str, float] | None = None   # (호출 ID, 단계, 읽은 시각)
         self.last_state = None
         # 자동 재시도를 이미 쓴 주행 묶음(그 묶음이 active 가 된 시각, systemd 단조 μs). 묶음을
@@ -110,6 +122,7 @@ class ModeNode(Node):
         self.create_subscription(String, "/safety_state", self.on_safety, 10)
         self.create_subscription(String, "/vica/mapping_status", self.on_mapping, latched)
         self.create_subscription(RobotState, "/vica/robot_state", self.on_robot_state, 10)
+        self.create_subscription(String, "/vica/mode/map_request", self.on_map_request, 5)
 
         self.create_service(Trigger, "/vica/mode/drive_start", self.on_drive_start)
         self.create_service(Trigger, "/vica/mode/drive_stop", self.on_drive_stop)
@@ -138,8 +151,10 @@ class ModeNode(Node):
             self.mapping = (state, time.monotonic())
 
     def on_robot_state(self, msg: RobotState) -> None:
+        now = time.monotonic()
         with self.lock:
-            self.moving = (bool(msg.is_moving), time.monotonic())
+            self.moving = (bool(msg.is_moving), now)
+            self.dialog = (str(msg.dialog_state), now)
 
     # ---- 사실 모으기 ------------------------------------------------------------
     def scan_processes(self) -> tuple[dict[str, int], dict[str, int]]:
@@ -217,6 +232,7 @@ class ModeNode(Node):
             safety = self.safety[0] if self.safety and now - self.safety[1] < FRESH_SEC else None
             mapping = self.mapping[0] if self.mapping else None
             moving = self.moving[0] if self.moving and now - self.moving[1] < FRESH_SEC else None
+            dialog = self.dialog[0] if self.dialog and now - self.dialog[1] < FRESH_SEC else None
         return ml.Snapshot(
             units=units, procs=procs, cmdline_hits=hits,
             nav2_phase=self.nav2_phase(units, invocations, unit_age.get(NAV2_UNIT)),
@@ -226,7 +242,44 @@ class ModeNode(Node):
             stop_pending_sec=None if self.stop_pending_since is None else now - self.stop_pending_since,
             stopping_sec=max(going_down) if going_down else None,
             voice_mode=self.voice_mode(),
+            dialog_state=dialog,
+            current_map=self.read_current_map(),
+            running_maps=self.running_maps(units, invocations),
         )
+
+    def read_current_map(self) -> str:
+        try:
+            return CURRENT_MAP.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return ""
+
+    def running_maps(self, units, invocations) -> dict[str, str]:
+        """지도를 쥔 유닛마다 이번 기동이 읽은 지도. 저널은 그 호출에서 줄을 찾을 때까지만 읽는다."""
+        found: dict[str, str] = {}
+        live = set()
+        for key in ml.MAP_TRACKED:
+            unit = self.manifest.get(key, {}).get("unit")
+            inv = invocations.get(unit, "") if unit else ""
+            if not inv or units.get(unit, ("",))[0] not in ("active", "activating"):
+                continue
+            live.add(inv)
+            if inv not in self.map_marks:
+                try:
+                    lines = subprocess.run(
+                        ["journalctl", "--user", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat",
+                         "--no-pager", "-g", MAP_JOURNAL_GREP],
+                        capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT,
+                    ).stdout.splitlines()
+                except (OSError, subprocess.TimeoutExpired):
+                    lines = []
+                mark = ml.parse_map_mark(lines)
+                if mark:
+                    self.map_marks[inv] = mark
+            if inv in self.map_marks:
+                found[key] = self.map_marks[inv]
+        # 지난 호출은 버린다(유닛을 다시 띄울 때마다 하나씩 쌓인다).
+        self.map_marks = {inv: m for inv, m in self.map_marks.items() if inv in live}
+        return found
 
     # ---- 주기 발행 ------------------------------------------------------------
     def tick(self) -> None:
@@ -257,6 +310,7 @@ class ModeNode(Node):
             self.poll_voice()
             status["voice_events"] = list(self.voice_events)[-5:]
             status["voice_events_epoch"] = self.started_wall
+            status["map_change"] = self.map_change
         except (OSError, subprocess.TimeoutExpired) as exc:
             status = {"mode": "unknown", "state": "error", "detail": f"상태를 읽지 못했습니다: {exc}"}
         status["timestamp"] = time.time()
@@ -415,6 +469,73 @@ class ModeNode(Node):
         self.get_logger().info(f"[음성] 다음 기동부터 {mode}")
         response.success, response.message = True, f"음성을 {label}(으)로 정했습니다. 주행을 켤 때 적용됩니다."
         return response
+
+    # ---- 주행 지도 바꾸기(사용자 11-17) ------------------------------------------
+    def map_problem(self, map_id: str) -> str | None:
+        """지도 파일이 갖춰졌는가. yaml 과 그것이 가리키는 그림(image:)이 둘 다 있어야 한다."""
+        yaml_path = MAPS_DIR / f"{map_id}.yaml"
+        try:
+            text = yaml_path.read_text(encoding="utf-8")
+        except OSError:
+            return f"지도 파일 없음({map_id}.yaml)"
+        match = re.search(r"^image:\s*['\"]?([^'\"\n]+?)['\"]?\s*$", text, re.MULTILINE)
+        if not match:
+            return f"지도 파일에 그림 경로가 없음({map_id}.yaml)"
+        image = Path(match.group(1))
+        if not image.is_absolute():
+            image = yaml_path.parent / image
+        if not image.is_file():
+            return f"지도 그림 없음({image.name})"
+        return None
+
+    def write_current_map(self, map_id: str) -> None:
+        """CURRENT_MAP 을 원자적으로 바꾼다(쓰는 도중 유닛이 읽어도 반쪽 값을 보지 않게)."""
+        tmp = CURRENT_MAP.with_name(f".CURRENT_MAP.{os.getpid()}.tmp")
+        tmp.write_text(map_id + "\n", encoding="utf-8")
+        os.replace(tmp, CURRENT_MAP)
+
+    def on_map_request(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+            request_id = str(payload.get("request_id", ""))[:64]
+            map_id = str(payload.get("map_id", "")).strip()
+        except (ValueError, AttributeError):
+            self.get_logger().warn(f"[지도] 요청을 읽지 못함: {msg.data[:120]!r}")
+            return
+        snap = self.collect()
+        state = ml.derive_status(snap, self.manifest)["state"]
+        before = snap.current_map
+        result = {"request_id": request_id, "map_id": map_id, "from": before, "at": time.time(),
+                  "restarted": []}
+        refusal = ml.map_change_refusal(snap, self.manifest, state, map_id,
+                                        self.map_problem(map_id) if ml.MAP_ID_RE.match(map_id) else None)
+        if refusal:
+            self.map_change = dict(result, state="refused", message=refusal)
+            self.get_logger().warn(f"[지도 거부] {before} → {map_id}: {refusal}")
+            self.tick()
+            return
+        units = ml.map_restart_units(snap, self.manifest, map_id)
+        try:
+            if map_id != before:
+                self.write_current_map(map_id)
+            if units:
+                done = systemctl("restart", "--no-block", *units)
+                if done.returncode != 0:
+                    raise OSError(done.stderr.strip()[:200])
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.map_change = dict(result, state="failed", message=f"바꾸지 못함: {exc}")
+            self.get_logger().error(f"[지도 실패] {before} → {map_id}: {exc}")
+            self.tick()
+            return
+        keys = [k for k in ml.MAP_RESTART if self.manifest.get(k, {}).get("unit") in units]
+        if NAV2_UNIT in units:
+            # Nav2 를 새로 띄웠다. 새 호출이 뜰 때까지 starting 으로 보고, 자동 재시도도 한 번 다시 쓸 수 있다.
+            self.replaced_inv = self.nav2_inv
+            self.retried_for = None
+        message = "Nav2·미션·음성 재시작 · 약 1분" if units else "다음 주행부터 적용"
+        self.map_change = dict(result, state="applied", message=message, restarted=keys)
+        self.get_logger().info(f"[지도] {before} → {map_id} · 다시 띄움: {', '.join(keys) or '없음'}")
+        self.tick()
 
     def on_nav2_restart(self, _request, response):
         snap = self.collect()

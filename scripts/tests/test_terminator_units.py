@@ -165,11 +165,21 @@ class RunScriptContent(unittest.TestCase):
         self.assertIn("/usr/local/cuda-12.6/lib64", text)
         self.assertIn("en_US.UTF-8", text)
 
-    def test_app_bridge_passes_the_map_just_like_the_pane(self):
-        # supervisor_bringup 은 map_yaml 이 비면 `-p map_yaml:=` 를 넘기고, rcl 이 그것을
-        # 해석하지 못해 vica_status_app_node 가 죽는다(2026-11-14 실기). launch 는 살아
-        # 있어서 유닛은 active 로 보인다. 그 launch 가 고쳐지기 전에는 칸과 똑같이 넘긴다.
-        self.assertIn("map_yaml:=$VICA_MAP_YAML", run_script("app", g.build_terms()["app"]))
+    def test_app_bridge_unit_lets_the_status_node_follow_nav2_map(self):
+        # 앱에서 주행 지도를 바꾸면 /robot_status 의 map_id 도 따라가야 한다(11-17). 상태 노드는
+        # map_yaml 이 비었을 때만 map_server 를 계속 읽는다. 빈 값 수리(c9286ea)가 운영 브랜치에 있다.
+        terms = g.build_terms()
+        self.assertNotIn("map_yaml:=", run_script("app", terms["app"]))
+        # 칸은 예전 명령 그대로(부팅 지도를 넘긴다).
+        self.assertIn("map_yaml:=$VICA_MAP_YAML", terms["app"].command)
+
+    def test_units_that_read_the_map_say_which_map_they_read(self):
+        # 모드 노드가 저널의 '[vica-map] <id>' 로 Nav2·미션·음성이 쥔 지도를 안다(11-17).
+        terms = g.build_terms()
+        for key in ("nav2", "mission", "llm"):
+            self.assertIn("printf '[vica-map] %s\\n' \"$VICA_MAP_ID\"", run_script(key, terms[key]), key)
+        # 칸 rc 에는 넣지 않는다.
+        self.assertNotIn("[vica-map]", g.render_rc(terms["nav2"], ROS_WS, MAP_ID))
 
     def test_python_launched_servers_are_guarded_by_command_line(self):
         # rosbridge 는 `#!/usr/bin/env python3` 로 떠서 comm 이 python3 다. 이름으로는 못 찾는다.

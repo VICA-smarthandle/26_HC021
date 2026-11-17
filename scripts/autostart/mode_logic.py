@@ -9,7 +9,8 @@
     Nav2 기동 단계             저널(이번 vica-nav2 호출)의 lifecycle_manager_navigation·localization 줄
     safety 상태                /safety_state
     지도 그리기 상태           /vica/mapping_status
-    움직이는 중                /vica/robot_state.is_moving
+    움직이는 중·미션 상태      /vica/robot_state.is_moving · dialog_state
+    주행 지도                  maps/CURRENT_MAP · 유닛 저널의 '[vica-map] <id>' 줄
 """
 from __future__ import annotations
 
@@ -68,6 +69,12 @@ class Snapshot:
     stopping_sec: float | None = None
     # 앱에서 고른 음성(voice_mode 파일). online(⑫) · offline(⑬ 오프라인 믿음)
     voice_mode: str = "offline"
+    # /vica/robot_state.dialog_state(미션 상태). 미션이 없거나 오래됐으면 None
+    dialog_state: str | None = None
+    # maps/CURRENT_MAP 의 지도 id(다음에 켜는 유닛이 읽는 값). 없으면 ""
+    current_map: str = ""
+    # 지도를 쥐는 유닛(MAP_TRACKED) → 이번 기동이 읽은 지도 id(실행 스크립트의 '[vica-map]' 줄). 모르면 없다.
+    running_maps: dict[str, str] = field(default_factory=dict)
 
 
 def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
@@ -180,6 +187,12 @@ def drive_on(snap: Snapshot, manifest: dict) -> bool:
 
 def derive_status(snap: Snapshot, manifest: dict) -> dict:
     """/vica/mode_status 에 실을 내용."""
+    status = _derive_core(snap, manifest)
+    status.update(map_fields(snap, manifest, status["state"]))
+    return status
+
+
+def _derive_core(snap: Snapshot, manifest: dict) -> dict:
     drive = _bundle(manifest, "drive")
     target = _state(snap, DRIVE_TARGET)
 
@@ -426,3 +439,106 @@ def nav2_restart_refusal(snap: Snapshot) -> str | None:
     if snap.robot_moving:
         return "주행 중입니다."
     return None
+
+
+# ---- 주행 지도 바꾸기(사용자 11-17) ------------------------------------------------
+#
+# 지도는 maps/CURRENT_MAP 한 곳이 정하고, 유닛은 켜질 때 한 번 읽는다(실행 스크립트 MAP_BLOCK).
+# 그래서 파일을 쓰고 지도를 쥔 유닛을 다시 띄운다. 11-17 확인:
+#   nav2     map:= · 같은 이름의 레일(_route.geojson)·금지구역(_keepout.yaml)
+#   mission  map_id:= · ~/vica_data/destinations/<id>/ 목적지·홈·순찰 경로
+#   llm      vica_voice.launch.py map_id:= → vica_llm·tts·wakeword 의 destinations.yaml 경로
+#   posecheck /map 을 다시 받지만 크기·원점이 같으면 옛 거리표를 쓴다(_on_map 의 key) — 같이 다시 띄운다
+# 손잡이·감지기·감시·safety 는 지도를 쓰지 않는다. 런타임 교체(map_server LoadMap)는 미션·음성·레일이
+# 따로 쥔 지도가 어긋나서 쓰지 않는다.
+MAP_TRACKED = ("nav2", "mission", "llm")
+MAP_RESTART = ("nav2", "mission", "llm", "posecheck")
+MAP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_MAP_MARK = re.compile(r"\[vica-map\] (\S+)")
+# 로봇이 멈춰 있고 주행이 끝나 대기 중이거나 일시정지 중일 때만 바꾼다(사용자 11-17).
+# 일시정지한 안내·순찰은 미션을 다시 띄우면 취소된다(목적지·순찰 경로가 지도마다 따로다).
+MAP_CHANGE_OK = ("idle", "arrived", "failed", "paused", "paused_handle", "patrol_paused")
+_DIALOG_LABEL = {
+    "navigating": "안내 중", "confirming": "목적지 확인 중", "estopped": "비상정지 중",
+    "grip_wait": "손잡이 잡기 대기 중", "seeking": "부른 사람 찾는 중",
+    "approaching": "사람 접근 중", "awaiting_user": "사람 접근 중", "turning": "사람 접근 중",
+    "returning": "사람 접근 중",
+    "asking_next": "도착 뒤 안내 중", "asking_wait_time": "도착 뒤 안내 중", "waiting": "도착 뒤 기다리는 중",
+    "waiting_release": "도착 뒤 기다리는 중", "moving_to_wait_spot": "대기 장소로 가는 중",
+    "moving_back_to_dest": "목적지로 돌아가는 중",
+    "patrolling": "순찰 중", "patrol_dwell": "순찰 중", "patrol_alarm": "순찰 경보 중",
+    "patrol_light": "순찰 경보 중",
+}
+
+
+def parse_map_mark(lines: list[str]) -> str:
+    """실행 스크립트가 기동 때 찍는 '[vica-map] <id>' 줄의 마지막 값. 없으면 ""."""
+    found = ""
+    for raw in lines:
+        match = _MAP_MARK.search(_ANSI.sub("", raw))
+        if match:
+            found = match.group(1)
+    return found
+
+
+def map_change_block(snap: Snapshot, manifest: dict, state: str) -> str | None:
+    """지금 로봇 상태 때문에 주행 지도를 바꿀 수 없는 이유. 없으면 None. state 는 derive_status 의 state."""
+    if snap.mapping_state not in MAPPING_IDLE:
+        return "지도 그리는 중엔 불가"
+    if any(snap.procs.get(name, 0) for name in ("cartographer_no", "cartographer_oc")):
+        return "지도 그리기 노드가 떠 있음"
+    if not drive_on(snap, manifest) and state != "stopping":
+        return None    # 주행이 꺼져 있으면 파일만 바꾼다. 다음에 켤 때 읽는다.
+    if (state in ("starting", "stopping") or snap.stop_pending_sec is not None
+            or snap.nav2_phase == "starting"):
+        return "주행을 켜거나 끄는 중엔 불가"
+    if snap.robot_moving is None or snap.dialog_state is None:
+        return "로봇 상태를 받지 못함 · 주행을 끈 뒤 바꾸세요"
+    if snap.robot_moving:
+        return "로봇이 움직이는 중엔 불가"
+    if snap.dialog_state not in MAP_CHANGE_OK:
+        label = _DIALOG_LABEL.get(snap.dialog_state, f"지금 상태({snap.dialog_state})")
+        return f"{label}엔 불가 · 끝나거나 일시정지하면 가능"
+    return None
+
+
+def map_change_refusal(snap: Snapshot, manifest: dict, state: str, map_id: str,
+                       map_problem: str | None) -> str | None:
+    """이 지도로 바꾸는 요청을 거절할 이유. map_problem 은 노드가 파일을 보고 넘긴다(없으면 None)."""
+    if not MAP_ID_RE.match(map_id or ""):
+        return "지도 이름이 올바르지 않음"
+    if map_id.endswith(("_keepout", "_route")):
+        # maps/ 에는 금지구역 마스크(<id>_keepout.yaml·pgm)도 지도와 같은 꼴로 있다.
+        return "금지구역·레일 파일은 주행 지도가 아님"
+    if map_problem:
+        return map_problem
+    return map_change_block(snap, manifest, state)
+
+
+def map_restart_units(snap: Snapshot, manifest: dict, map_id: str) -> list[str]:
+    """지도를 바꾼 뒤 다시 띄울 유닛. 주행이 꺼져 있거나, 떠 있는 유닛이 이미 그 지도면 없다.
+
+    떠 있지 않은 유닛은 켜질 때 새 파일을 읽는다. failed 인 유닛도 다시 띄운다(새 지도로 살린다).
+    """
+    if not drive_on(snap, manifest):
+        return []
+    live = ("active", "activating", "failed")
+    tracked = [k for k in MAP_TRACKED if k in manifest and _state(snap, manifest[k]["unit"]) in live]
+    if tracked and all(snap.running_maps.get(k) == map_id for k in tracked):
+        return []
+    return [manifest[k]["unit"] for k in MAP_RESTART
+            if k in manifest and _state(snap, manifest[k]["unit"]) in live]
+
+
+def map_fields(snap: Snapshot, manifest: dict, state: str) -> dict:
+    """/vica/mode_status 에 싣는 지도 칸. 어긋남 = 주행 중 유닛이 읽은 지도가 CURRENT_MAP 과 다름."""
+    running = {k: snap.running_maps[k] for k in MAP_TRACKED
+               if k in manifest and _state(snap, manifest[k]["unit"]) == "active"
+               and snap.running_maps.get(k)}
+    mismatch = bool(snap.current_map) and any(v != snap.current_map for v in running.values())
+    return {
+        "current_map_id": snap.current_map,
+        "running_maps": running,
+        "map_mismatch": mismatch,
+        "map_change_block": map_change_block(snap, manifest, state) or "",
+    }
