@@ -1437,7 +1437,7 @@ printf '\\033[0;32m실행:\\033[0m %s\\n\\n' {command_q}
 """
 
 HOLD_BLOCK = """\
-history -s {command_q}
+history -s {history_q}
 printf '\\033[0;33m대기 중\\033[0m — 위 화살표(↑) 한 번 + Enter 로 실행합니다:\\n'
 printf '  %s\\n\\n' {command_q}
 """
@@ -1524,7 +1524,15 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
     elif term.mode == SHELL:
         run_block = SHELL_BLOCK
     else:
-        run_block = HOLD_BLOCK.format(command_q=shell_quote(term.command))
+        # 대기 칸은 ↑+Enter 순간에도 같은 검사를 한다(2026-11-17). 칸을 열 때의 검사만으로는
+        # 칸을 열어 둔 뒤 앱으로 주행을 켜고 ↑+Enter 를 누르면 두 벌이 떴다. 명령을 { } 로 묶어
+        # 명령 안의 `a && b || c` 가 guard 거부 뒤에 돌지 않게 한다. 화면에는 명령만 보인다.
+        history = term.command
+        if term.guard:
+            history = f"vica_guard {names} && {{ {term.command}; }}"
+        run_block = HOLD_BLOCK.format(
+            history_q=shell_quote(history), command_q=shell_quote(term.command)
+        )
 
     return RC_TEMPLATE.format(
         helper_block=HELPER_BLOCK,
