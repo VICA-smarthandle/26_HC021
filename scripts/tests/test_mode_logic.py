@@ -675,6 +675,7 @@ class MapChange(unittest.TestCase):
         self.assertEqual(status["map_change_block"], "")
         busy = ml.derive_status(map_snapshot(dialog_state="navigating"), MAP_MANIFEST)
         self.assertIn("안내 중", busy["map_change_block"])
+        self.assertEqual(busy["dialog_state"], "navigating")
 
     def test_file_changed_behind_the_drive_is_a_mismatch(self):
         # ⑦ 터미널에서 CURRENT_MAP 만 바꿨다. Nav2 는 옛 지도로 떠 있다.

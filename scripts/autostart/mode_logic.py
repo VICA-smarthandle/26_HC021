@@ -541,4 +541,6 @@ def map_fields(snap: Snapshot, manifest: dict, state: str) -> dict:
         "running_maps": running,
         "map_mismatch": mismatch,
         "map_change_block": map_change_block(snap, manifest, state) or "",
+        # 앱이 확인 창을 고른다 — 일시정지 중이면 '남은 안내·순찰 취소'를 알린다(목업 ④-2).
+        "dialog_state": snap.dialog_state or "",
     }
