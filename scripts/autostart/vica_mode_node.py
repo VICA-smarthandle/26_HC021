@@ -14,6 +14,10 @@
 이 노드가 죽어도 주행 묶음은 그대로 돌고, 다시 뜬 노드는 같은 상태를 다시 읽는다.
 판정은 mode_logic.py(시험: scripts/tests/test_mode_logic.py).
 
+rosbridge 감시(11-17): 9090 에 연결 하나를 계속 붙여 두고 자기 /vica/mode_status 가 돌아오는지 본다.
+15 s 넘게 안 오면(처리 스레드가 죽어 소켓만 산 상태) 로봇이 멈춰 있을 때 vica-app 을 다시 띄운다.
+판정은 ml.BridgeWatch. 끄려면 VICA_BRIDGE_WATCH=0.
+
 서비스는 곧바로 답한다(systemctl --no-block). 2026-08-21 rosbridge 가 응답 없는 서비스
 하나에 통째로 막힌 일이 있어 매핑 감독 노드와 같은 방식을 따른다. 끝났는지는 상태 토픽으로 본다.
 """
@@ -62,6 +66,8 @@ SYSTEMCTL_TIMEOUT = 5.0
 # 상태를 모으는 주기. 한 번에 CPU 약 35 ms(systemctl 20 · /proc 12) — 1초면 노드만 4 % 남짓이라
 # 2초로 둔다. 앱이 보는 진행 표시는 2초면 충분하다.
 TICK_SEC = 2.0
+BRIDGE_URL = os.environ.get("VICA_BRIDGE_URL", "ws://127.0.0.1:9090")
+BRIDGE_WATCH_ON = os.environ.get("VICA_BRIDGE_WATCH", "1") != "0"
 
 
 def systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -139,6 +145,11 @@ class ModeNode(Node):
             f"모드 노드 시작: 유닛 {len(self.units)}개 ({manifest_path}). "
             "/vica/mode/drive_start · drive_stop · nav2_restart → /vica/mode_status"
         )
+        self.bridge = ml.BridgeWatch()
+        self.bridge_lock = threading.Lock()
+        self.bridge_stop = threading.Event()
+        if BRIDGE_WATCH_ON:
+            threading.Thread(target=self.watch_bridge, name="bridge_watch", daemon=True).start()
 
     # ---- 구독 ---------------------------------------------------------------
     def on_safety(self, msg: String) -> None:
@@ -318,6 +329,8 @@ class ModeNode(Node):
             status = {"mode": "unknown", "state": "error", "detail": f"상태를 읽지 못했습니다: {exc}"}
         status["timestamp"] = time.time()
         self.pub.publish(String(data=json.dumps(status, ensure_ascii=False)))
+        with self.bridge_lock:
+            self.bridge.published(time.monotonic())
         key = (status.get("mode"), status.get("state"), status.get("detail"), status.get("reset_needed"))
         if key != self.last_state:
             self.last_state = key
@@ -326,6 +339,72 @@ class ModeNode(Node):
                 f"{' · ' + status['detail'] if status.get('detail') else ''}"
                 f" · nav2={status.get('nav2')} · safety={status.get('safety')}"
             )
+
+    # ---- rosbridge 감시 -------------------------------------------------------
+    def robot_moving(self) -> bool:
+        """움직이는 중이라고 확실할 때만 True. robot_state 가 끊겼으면(미션 꺼짐) 멈춘 것으로 본다."""
+        with self.lock:
+            m = self.moving
+        return bool(m and m[0] and time.monotonic() - m[1] < FRESH_SEC)
+
+    def watch_bridge(self) -> None:
+        """실행기 밖 스레드. 웹소켓 수신이 서비스·상태 발행을 막지 않게 한다."""
+        try:
+            import websocket  # websocket-client
+        except ImportError as exc:
+            self.get_logger().warn(f"[rosbridge 감시] 끔: websocket-client 없음 ({exc})")
+            return
+        log = self.get_logger()
+        sub = json.dumps({"op": "subscribe", "topic": "/vica/mode_status", "type": "std_msgs/String"})
+        last_hold = ""
+        while not self.bridge_stop.is_set():
+            try:
+                ws = websocket.create_connection(BRIDGE_URL, timeout=3)
+                ws.send(sub)
+                ws.settimeout(1.0)
+            except (OSError, websocket.WebSocketException):
+                # 안 열림 = rosbridge 가 없거나 뜨는 중. 그건 systemd 몫이라 기다리기만 한다.
+                with self.bridge_lock:
+                    self.bridge.disconnected()
+                self.bridge_stop.wait(5.0)
+                continue
+            with self.bridge_lock:
+                self.bridge.connected(time.monotonic())
+            try:
+                while not self.bridge_stop.is_set():
+                    try:
+                        raw = ws.recv()
+                        if ml.bridge_message_is_ours(raw):
+                            with self.bridge_lock:
+                                self.bridge.received(time.monotonic())
+                    except websocket.WebSocketTimeoutException:
+                        pass
+                    moving = self.robot_moving()
+                    with self.bridge_lock:
+                        verdict = self.bridge.verdict(time.monotonic(), moving)
+                        hold = self.bridge.hold_reason
+                    if verdict == "hold" and hold != last_hold:
+                        log.warn(f"[rosbridge 감시] {ml.BRIDGE_SILENT_SEC:.0f} s 넘게 받은 것 없음 — "
+                                 f"재시작 미룸({hold})")
+                    last_hold = hold if verdict == "hold" else ""
+                    if verdict == "restart":
+                        done = systemctl("restart", "--no-block", ml.BRIDGE_APP_UNIT)
+                        log.error(f"[rosbridge 감시] 소켓은 붙었는데 {ml.BRIDGE_SILENT_SEC:.0f} s 넘게 "
+                                  f"/vica/mode_status 가 안 옴 → {ml.BRIDGE_APP_UNIT} 다시 띄움 "
+                                  f"(rc={done.returncode})")
+                        with self.bridge_lock:
+                            self.bridge.restarted(time.monotonic())
+                        break
+            except (OSError, websocket.WebSocketException, subprocess.TimeoutExpired):
+                pass   # 끊김(rosbridge 재시작 등) → 다시 붙는다
+            finally:
+                try:
+                    ws.close()
+                except (OSError, websocket.WebSocketException):
+                    pass
+                with self.bridge_lock:
+                    self.bridge.disconnected()
+            self.bridge_stop.wait(2.0)
 
     # ---- 서비스 ---------------------------------------------------------------
     def run(self, response, refusal: str | None, args: list[str], ok: str) -> Trigger.Response:
@@ -576,6 +655,7 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        node.bridge_stop.set()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

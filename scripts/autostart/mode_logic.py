@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import collections
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -544,3 +546,84 @@ def map_fields(snap: Snapshot, manifest: dict, state: str) -> dict:
         # 앱이 확인 창을 고른다 — 일시정지 중이면 '남은 안내·순찰 취소'를 알린다(목업 ④-2).
         "dialog_state": snap.dialog_state or "",
     }
+
+
+# ---- rosbridge 감시(11-17) ---------------------------------------------------------
+# 2026-11-17 14:39 rosbridge 안의 ROS 처리 스레드(Thread-1 spin)가 rclpy InvalidHandle 로 죽었다.
+# 프로세스·웹소켓은 살아 있어 systemd 는 active, 앱은 '온라인'인데 토픽·서비스가 하나도 안 왔다.
+# 모드 노드가 rosbridge 에 연결 하나를 계속 붙여 두고 자기 /vica/mode_status 가 돌아오는지 본다.
+# 붙었다 끊기를 되풀이하지 않는다 — 그 죽음이 바로 클라이언트가 끊길 때 구독을 지우는 경합이다.
+BRIDGE_APP_UNIT = "vica-app.service"
+# 붙은 채 이만큼 아무것도 안 오면 죽은 것으로 본다. mode_status 는 2초마다(TICK_SEC) — 7번 놓침.
+BRIDGE_SILENT_SEC = 15.0
+# 그 사이 모드 노드 자신이 이만큼은 냈어야 한다(자기가 멈춘 것을 rosbridge 탓으로 돌리지 않게).
+BRIDGE_MIN_OWN_PUBS = 4
+# 재시작 뒤 판정을 쉬는 시간(11-17 실측: 재시작 → 9090 열림 17 s)과 재시작 사이 최소 간격.
+BRIDGE_GRACE_SEC = 60.0
+BRIDGE_COOLDOWN_SEC = 300.0
+
+
+def bridge_message_is_ours(raw) -> bool:
+    """rosbridge 가 보낸 한 줄이 /vica/mode_status 발행인가.
+
+    rosbridge 는 JSON 의 '/' 를 '\\/' 로 적는다("topic":"\\/vica\\/mode_status"). 원문에서 문자열을 찾으면
+    못 찾는다 — 11-17 첫 배포가 그래서 멀쩡한 rosbridge 를 다시 띄웠다. 풀어서 비교한다.
+    """
+    try:
+        msg = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(msg, dict) and msg.get("op") == "publish" and msg.get("topic") == "/vica/mode_status"
+
+
+class BridgeWatch:
+    """rosbridge 가 데이터를 넘기는지 판정한다. 시각은 time.monotonic() 초. 스레드 안전하지 않다 — 호출 쪽이 잠근다.
+
+    verdict(): "ok" | "wait"(판정할 근거가 아직 없음) | "hold"(죽었지만 지금은 재시작하지 않음) | "restart"
+    """
+
+    def __init__(self) -> None:
+        self.connected_at: float | None = None
+        self.last_rx: float | None = None
+        self.own_pubs: collections.deque = collections.deque(maxlen=64)
+        self.restarted_at: float | None = None
+        self.hold_reason = ""
+
+    def connected(self, now: float) -> None:
+        self.connected_at, self.last_rx = now, None
+
+    def disconnected(self) -> None:
+        self.connected_at, self.last_rx = None, None
+
+    def received(self, now: float) -> None:
+        self.last_rx = now
+
+    def published(self, now: float) -> None:
+        self.own_pubs.append(now)
+
+    def restarted(self, now: float) -> None:
+        self.restarted_at = now
+        self.disconnected()
+
+    def silent(self, now: float) -> bool:
+        if self.connected_at is None or now - self.connected_at < BRIDGE_SILENT_SEC:
+            return False
+        if self.last_rx is not None and now - self.last_rx < BRIDGE_SILENT_SEC:
+            return False
+        since = max(self.connected_at, self.last_rx or self.connected_at)
+        return sum(1 for t in self.own_pubs if t >= since) >= BRIDGE_MIN_OWN_PUBS
+
+    def verdict(self, now: float, moving: bool) -> str:
+        if self.restarted_at is not None and now - self.restarted_at < BRIDGE_GRACE_SEC:
+            return "wait"
+        if not self.silent(now):
+            return "ok" if self.last_rx is not None else "wait"
+        if moving:
+            # 주행 중에는 vica-app(목적지·금지구역·경로 노드 포함)을 다시 띄우지 않는다. 멈추면 띄운다.
+            self.hold_reason = "로봇이 움직이는 중"
+            return "hold"
+        if self.restarted_at is not None and now - self.restarted_at < BRIDGE_COOLDOWN_SEC:
+            self.hold_reason = f"직전 재시작 뒤 {BRIDGE_COOLDOWN_SEC:.0f} s 안"
+            return "hold"
+        self.hold_reason = ""
+        return "restart"

@@ -690,3 +690,83 @@ class MapChange(unittest.TestCase):
                  "[vica-map] map_1116_203022", "실행: ros2 launch …"]
         self.assertEqual(ml.parse_map_mark(lines), "map_1116_203022")
         self.assertEqual(ml.parse_map_mark(["현재 지도 x"]), "")
+
+
+class BridgeWatchTest(unittest.TestCase):
+    """rosbridge 감시(11-17). 처리 스레드가 죽어 소켓만 살아 있던 일을 다시 띄워 살린다."""
+
+    def run_silent(self, w, start, secs, pub_every=2.0):
+        t = start
+        while t < start + secs:
+            w.published(t)
+            t += pub_every
+        return start + secs
+
+    def test_flowing_bridge_is_ok(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        for t in range(0, 60, 2):
+            w.published(float(t))
+            w.received(float(t) + 0.1)
+        self.assertEqual(w.verdict(60.0, moving=False), "ok")
+
+    def test_silent_bridge_while_we_publish_is_restarted(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 16.0)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_not_judged_before_the_silent_window(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 14.0)
+        self.assertEqual(w.verdict(now, moving=False), "wait")
+
+    def test_bridge_that_stopped_after_working_is_restarted(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        w.received(5.0)
+        now = self.run_silent(w, 5.0, 16.0)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_our_own_silence_is_not_blamed_on_the_bridge(self):
+        # 모드 노드 자신이 발행을 못 했으면(실행기가 멈춤) rosbridge 를 다시 띄우지 않는다.
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        w.published(1.0)
+        self.assertNotEqual(w.verdict(30.0, moving=False), "restart")
+
+    def test_held_while_moving_then_restarted_when_stopped(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 20.0)
+        self.assertEqual(w.verdict(now, moving=True), "hold")
+        self.assertIn("움직이는", w.hold_reason)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_grace_and_cooldown_after_restart(self):
+        w = ml.BridgeWatch()
+        w.restarted(100.0)
+        w.connected(120.0)
+        now = self.run_silent(w, 120.0, 30.0)                      # 150 s: 재시작 뒤 50 s
+        self.assertEqual(w.verdict(now, moving=False), "wait")
+        w.connected(170.0)
+        now = self.run_silent(w, 170.0, 20.0)                      # 190 s: 쉬는 시간 지남, 간격 300 s 안
+        self.assertEqual(w.verdict(now, moving=False), "hold")
+        w.connected(390.0)
+        now = self.run_silent(w, 390.0, 20.0)                      # 410 s: 간격도 지남
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_disconnected_is_not_judged(self):
+        w = ml.BridgeWatch()
+        self.run_silent(w, 0.0, 30.0)
+        self.assertEqual(w.verdict(30.0, moving=False), "wait")
+
+    def test_reads_rosbridge_escaped_topic(self):
+        # rosbridge 실물 한 줄(11-17 15:03 받음). '/' 가 '\\/' 로 온다.
+        raw = '{"op":"publish","topic":"\\/vica\\/mode_status","msg":{"data":"{}"}}'
+        self.assertTrue(ml.bridge_message_is_ours(raw))
+        self.assertTrue(ml.bridge_message_is_ours('{"op": "publish", "topic": "/vica/mode_status", "msg": {}}'))
+        self.assertFalse(ml.bridge_message_is_ours('{"op":"publish","topic":"\\/robot_status","msg":{}}'))
+        self.assertFalse(ml.bridge_message_is_ours('{"op":"status","msg":"x"}'))
+        self.assertFalse(ml.bridge_message_is_ours("not json"))
