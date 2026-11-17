@@ -270,7 +270,9 @@ VOICE_UNIT_COMMAND = (
     + " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & };"
     # 음성 노드의 첫 호출(시한 15 s)보다 먼저 모델을 올린다 — 11-17 로컬 기동 8번 모두 첫 호출이
     # 적재 중에 끊겨 Ollama 가 적재를 그만뒀다. 포트가 열릴 때까지도 이 스크립트가 기다린다.
-    ' "$VICA_BIN/vica_ollama_preload.sh" midm2-mini;'
+    # 출력은 실행 스크립트 본체가 찍는다 — 금방 끝나는 자식이 찍은 줄은 저널이 유닛에 묶지 못해
+    # `journalctl -u vica-llm`(모드 노드 음성 알림)에서 빠진다(11-17 실측: '올림' 줄이 유닛 밖으로).
+    ' echo "$("$VICA_BIN/vica_ollama_preload.sh" midm2-mini)";'
     " VICA_LOCAL_RULES=1 VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama"
     " OLLAMA_HOST=http://localhost:11434 VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY="
     " VICA_LLM_FALLBACK_MODEL= ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; }; "
