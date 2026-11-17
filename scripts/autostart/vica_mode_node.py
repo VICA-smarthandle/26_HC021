@@ -91,6 +91,9 @@ class ModeNode(Node):
         self.map_marks: dict[str, str] = {}
         # 마지막 지도 바꾸기 요청의 결과(mode_status.map_change). 노드가 다시 뜨면 잊는다.
         self.map_change: dict | None = None
+        # 처리한 지도 요청 ID. 앱은 결과가 올 때까지 같은 ID 로 다시 보낸다(토픽 한 번은 DDS 매칭 전에
+        # 사라질 수 있다 — 11-17 실기에서 한 번 사라짐). 같은 ID 는 다시 처리하지 않고 결과만 다시 낸다.
+        self.handled_map_requests: collections.deque = collections.deque(maxlen=32)
         self.nav2_cache: tuple[str, str, float] | None = None   # (호출 ID, 단계, 읽은 시각)
         self.last_state = None
         # 자동 재시도를 이미 쓴 주행 묶음(그 묶음이 active 가 된 시각, systemd 단조 μs). 묶음을
@@ -502,6 +505,11 @@ class ModeNode(Node):
         except (ValueError, AttributeError):
             self.get_logger().warn(f"[지도] 요청을 읽지 못함: {msg.data[:120]!r}")
             return
+        if request_id and request_id in self.handled_map_requests:
+            self.tick()
+            return
+        if request_id:
+            self.handled_map_requests.append(request_id)
         snap = self.collect()
         state = ml.derive_status(snap, self.manifest)["state"]
         before = snap.current_map
