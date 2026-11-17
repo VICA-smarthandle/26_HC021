@@ -547,6 +547,22 @@ class VoiceEvents(unittest.TestCase):
         self.assertEqual(self.run_lines(["음성: online", line]), ["external_fail"])
         self.assertEqual(self.run_lines(["음성: offline", line]), ["local_fail"])
 
+    def test_preload_failure_is_a_local_failure(self):
+        # 실행 스크립트가 음성 노드보다 먼저 모델을 올린다(vica_ollama_preload.sh, 11-17).
+        self.assertEqual(self.run_lines([
+            "음성: offline",
+            "[Ollama] 꺼져 있어 켭니다",
+            "[Ollama] midm2-mini 올리기 실패 (180 s) — 첫 질문이 늦거나 실패할 수 있습니다",
+            "... LLM 워밍업 완료 (15.1초)",
+        ]), ["local_fail"])
+
+    def test_preloaded_model_then_warmup_is_a_local_success(self):
+        self.assertEqual(self.run_lines([
+            "음성: offline",
+            "[Ollama] midm2-mini 올림 (47 s)",
+            "... LLM 워밍업 완료 (2.1초)",
+        ]), ["local_ok"])
+
     def test_both_failing(self):
         self.assertEqual(self.run_lines(["음성: online", "[LLM] 호출 실패(로컬까지): refused"]), ["both_fail"])
 

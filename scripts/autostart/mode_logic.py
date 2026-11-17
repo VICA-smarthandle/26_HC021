@@ -376,6 +376,7 @@ class VoiceEventTracker:
       langchain_intent_parser.py   '[LLM] 호출 실패(클라우드만, 폴백 꺼짐)' · '(로컬까지)' · '로컬 백엔드 준비 실패'
       llm_backend.py               '클라우드 실패(… → 로컬(…)로 대피' · '클라우드 건너뛰고 로컬' ·
                                    '인증 실패' · '→ 클라우드 복귀'
+      vica_ollama_preload.sh       '[Ollama] <모델> 올리기 실패' (유닛 실행 스크립트, 11-17)
     성공은 따로 찍히지 않는다. 기동 뒤 실패 줄 없이 '워밍업 완료' 가 오면 성공으로 본다 — 워밍업 호출이
     실패해도 '완료' 는 찍힌다(11-16 17:36 로컬 기동: timed out 뒤 '워밍업 완료 (15.1초)').
     로컬 모드(⑬)는 Ollama 가 주 백엔드라 '클라우드만' 실패도 로컬 실패다.
@@ -420,6 +421,10 @@ class VoiceEventTracker:
             self.failed = True
             detail = line.split(":", 1)[-1] if "LLM 워밍업 실패" in line else line.split("):", 1)[-1]
             return self._event("external_fail" if online else "local_fail", detail)
+        if "[Ollama] " in line and "올리기 실패" in line:
+            # 음성 노드보다 먼저 모델을 올리다 실패(11-17). 첫 질문이 늦거나 실패할 수 있다.
+            self.failed = True
+            return self._event("local_fail", "모델 올리기 실패")
         if "[LLM] 로컬 백엔드 준비 실패" in line:
             return self._event("local_fail", "준비 실패")
         if "Realtime 연결 예열 실패" in line:

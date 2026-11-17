@@ -485,20 +485,51 @@ class DetectorAndVoiceUnits(unittest.TestCase):
             "/usr/bin/python3 /opt/ros/humble/bin/ros2 launch launch/vica_voice.launch.py map_id:=m"))
         self.assertFalse(pattern.search("bash -c grep vica_voice.launch.py"))
 
-    def _voice(self, mode):
+    def _voice(self, mode, ollama_up=True):
         """음성 유닛 명령을 ros2·curl·nohup 을 흉내 낸 bash 에서 돌려 무엇을 띄우는지 본다."""
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         if mode is not None:
             (home / ".config" / "vica-terminator").mkdir(parents=True)
             (home / ".config" / "vica-terminator" / "voice_mode").write_text(mode + "\n")
+        # 모델 미리 올리기 도우미는 부른 순서와 인자만 남긴다.
+        bin_dir = home / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "vica_ollama_preload.sh").write_text('#!/bin/bash\necho "PRELOAD $*"\n')
+        (bin_dir / "vica_ollama_preload.sh").chmod(0o755)
         stub = (
             'ros2() { echo "ROS2 $* model=${VICA_LLM_MODEL:-none} rules=${VICA_LOCAL_RULES:-0}"; }; '
-            "curl() { return 0; }; nohup() { echo NOHUP; }; VICA_MAP_ID=m; "
+            f"curl() {{ return {0 if ollama_up else 7}; }}; "
+            'nohup() { echo "NOHUP $* keep=$OLLAMA_KEEP_ALIVE go=$OLLAMA_GO_TEMPLATE"; }; '
+            f"VICA_MAP_ID=m; VICA_BIN={bin_dir}; "
         )
-        out = subprocess.run(["bash", "-c", stub + self.terms["llm"].unit.command],
+        (home / "vica_data" / "qwen_field").mkdir(parents=True)
+        # 'wait': 뒤로 돌린 ollama serve(흉내)가 로그를 다 쓸 때까지.
+        out = subprocess.run(["bash", "-c", stub + self.terms["llm"].unit.command + "; wait"],
                              capture_output=True, text=True, env={"HOME": str(home), "PATH": os.environ["PATH"]})
-        return out.stdout
+        # nohup 은 실행 스크립트처럼 ollama_serve.log 로 간다 — 그 줄도 함께 돌려준다.
+        log = (home / "vica_data" / "qwen_field" / "ollama_serve.log")
+        return out.stdout + (log.read_text() if log.exists() else "")
+
+    def test_local_voice_preloads_the_model_before_the_voice_nodes(self):
+        # 11-17: 로컬 첫 호출이 15 s 에 끊겨 Ollama 가 적재를 그만뒀다 — 음성 노드보다 먼저 올린다.
+        out = self._voice("offline")
+        self.assertIn("PRELOAD midm2-mini", out)
+        self.assertLess(out.index("PRELOAD"), out.index("ROS2 launch"))
+        self.assertNotIn("PRELOAD", self._voice("online"))
+
+    def test_local_voice_starts_ollama_with_the_launch_settings(self):
+        # 설정 없이 먼저 켜면 launch 의 ollama_serve 가 '주소 사용 중' 으로 죽어 설정이 빠졌다(11-17).
+        out = self._voice("offline", ollama_up=False)
+        self.assertIn("NOHUP ollama serve keep=-1 go=1", out)
+        self.assertNotIn("NOHUP", self._voice("offline", ollama_up=True))
+        self.assertIn("vica_ollama_preload.sh", g.HELPER_SCRIPTS)
+        launch = (Path(__file__).resolve().parents[2] / "vica-voice-llm" / "launch" / "vica_voice.launch.py")
+        if launch.exists():  # 같은 설정인지 launch 와 대조(작업 트리에 음성 저장소가 있을 때만)
+            text = launch.read_text(encoding="utf-8")
+            for pair in g.OLLAMA_SERVE_ENV.split():
+                key, value = pair.split("=")
+                self.assertIn(f'"{key}": "{value}"', text, key)
 
     def test_voice_mode_file_picks_online_or_offline(self):
         online = self._voice("online")

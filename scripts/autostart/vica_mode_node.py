@@ -50,7 +50,7 @@ DEFAULT_MANIFEST = HERE.parent / "units.json"
 # 음성 유닛(vica-llm)이 기동 때 읽는 파일. 생성기 VOICE_MODE_FILE 과 같은 곳.
 VOICE_MODE_PATH = HERE.parent / "voice_mode"
 # 음성 연결 알림(사용자 11-16)에 쓰는 저널 줄만 고른다. 판정은 ml.VoiceEventTracker.
-VOICE_JOURNAL_GREP = "음성: |\\[LLM\\]|LLM 워밍업|Realtime 연결 예열"
+VOICE_JOURNAL_GREP = "음성: |\\[LLM\\]|LLM 워밍업|Realtime 연결 예열|\\[Ollama\\] "
 # 같은 알림(예: 말마다 나는 실패)은 이 안에 한 번만.
 VOICE_EVENT_REPEAT_SEC = 60.0
 NAV2_UNIT = ml.NAV2_UNIT

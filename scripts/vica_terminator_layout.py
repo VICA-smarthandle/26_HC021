@@ -104,7 +104,7 @@ AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
 HELPER_SCRIPTS = (
     "vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh",
     "vica_mode_node.py", "mode_logic.py", "fastdds_udp_only.xml", "fastdds_super_client.xml",
-    "nav2_bond.launch.py",
+    "nav2_bond.launch.py", "vica_ollama_preload.sh",
 )
 # --discovery-server(2026-11-16 시험): 노드가 서로를 직접 찾지 않고 이 서버를 거친다.
 DISCOVERY_SERVER = "127.0.0.1:11811"
@@ -253,14 +253,24 @@ VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && ech
 # 없으면 오프라인 믿음. ⑬ 줄은 10-24 손 수정본 t_llm_local.rc 와 같다(Ollama 자동 켜기·로컬 규칙).
 # 중복 검사는 유닛 guard_cmdline 이 한다 — VOICE_DUP_CHECK 를 붙이지 않는다.
 VOICE_MODE_FILE = "$HOME/.config/vica-terminator/voice_mode"
+# ⑬ 의 Ollama 는 vica_voice.launch.py 의 ollama_serve 와 같은 설정으로 켠다(2026-11-17). 설정 없이
+# 먼저 켜면 launch 쪽은 '주소 사용 중' 으로 죽고 OLLAMA_KEEP_ALIVE(모델이 5분 뒤 내려감)·
+# OLLAMA_GO_TEMPLATE(midm2-mini 가 목적지 목록을 놓침, 09-28 실측)이 빠진다.
+OLLAMA_SERVE_ENV = (
+    "OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_GO_TEMPLATE=1"
+)
 VOICE_UNIT_COMMAND = (
     f'VICA_VOICE_MODE=$(cat "{VOICE_MODE_FILE}" 2>/dev/null || echo offline); '
     "printf '음성: %s\\n' \"$VICA_VOICE_MODE\"; "
     'if [ "$VICA_VOICE_MODE" = online ]; then '
     "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; "
     "else "
-    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\";"
-    " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & sleep 3; };"
+    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\"; "
+    + OLLAMA_SERVE_ENV
+    + " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & };"
+    # 음성 노드의 첫 호출(시한 15 s)보다 먼저 모델을 올린다 — 11-17 로컬 기동 8번 모두 첫 호출이
+    # 적재 중에 끊겨 Ollama 가 적재를 그만뒀다. 포트가 열릴 때까지도 이 스크립트가 기다린다.
+    ' "$VICA_BIN/vica_ollama_preload.sh" midm2-mini;'
     " VICA_LOCAL_RULES=1 VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama"
     " OLLAMA_HOST=http://localhost:11434 VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY="
     " VICA_LLM_FALLBACK_MODEL= ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; }; "
