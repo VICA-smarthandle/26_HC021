@@ -104,7 +104,7 @@ AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
 HELPER_SCRIPTS = (
     "vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh",
     "vica_mode_node.py", "mode_logic.py", "fastdds_udp_only.xml", "fastdds_super_client.xml",
-    "nav2_bond.launch.py", "vica_ollama_preload.sh",
+    "nav2_bond.launch.py", "vica_ollama_preload.sh", "vica_shutdown.sh",
 )
 # --discovery-server(2026-11-16 시험): 노드가 서로를 직접 찾지 않고 이 서버를 거친다.
 DISCOVERY_SERVER = "127.0.0.1:11811"

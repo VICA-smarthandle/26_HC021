@@ -323,6 +323,19 @@ def drive_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
     return None
 
 
+def shutdown_refusal(snap: Snapshot) -> str | None:
+    """로봇 끄기(주행·기본 묶음 → sync → 시스템 종료)를 하면 안 되는 이유. 없으면 None.
+
+    앱 '로봇 끄기'(사용자 11-18). 움직이는 중이면 거절한다. 지도 그리기 중이면 저장 안 한 지도를
+    잃으니 거절한다. 움직임을 모르면(None) 막지 않는다 — drive_stop_refusal 과 같다.
+    """
+    if snap.robot_moving:
+        return "주행 중입니다. 멈춘 뒤 끕니다."
+    if snap.mapping_state not in MAPPING_IDLE:
+        return f"지도 그리기 중입니다({snap.mapping_state}). 저장하거나 끝낸 뒤 끕니다."
+    return None
+
+
 def drive_stop_refusal(snap: Snapshot) -> str | None:
     """주행 묶음을 내리면 안 되는 이유. 움직임을 모르면(None) 막지 않는다 — Nav2 를 내리면 멈춘다."""
     if snap.robot_moving:

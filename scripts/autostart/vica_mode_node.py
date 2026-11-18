@@ -68,6 +68,10 @@ SYSTEMCTL_TIMEOUT = 5.0
 TICK_SEC = 2.0
 BRIDGE_URL = os.environ.get("VICA_BRIDGE_URL", "ws://127.0.0.1:9090")
 BRIDGE_WATCH_ON = os.environ.get("VICA_BRIDGE_WATCH", "1") != "0"
+# 로봇 끄기(사용자 11-18). 모드 노드도 기본 묶음이라 같이 내려가므로, 끄는 일은 따로 띄운 일회성
+# 유닛이 한다(systemd-run --user). 스크립트는 생성기가 bin 에 복사한 사본.
+SHUTDOWN_SCRIPT = HERE / "vica_shutdown.sh"
+SHUTDOWN_UNIT = "vica-shutdown"
 
 
 def systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -136,6 +140,7 @@ class ModeNode(Node):
 
         self.create_service(Trigger, "/vica/mode/drive_start", self.on_drive_start)
         self.create_service(Trigger, "/vica/mode/drive_stop", self.on_drive_stop)
+        self.create_service(Trigger, "/vica/mode/shutdown", self.on_shutdown)
         self.create_service(Trigger, "/vica/mode/nav2_restart", self.on_nav2_restart)
         self.create_service(Trigger, "/vica/mode/detector_on", self.on_detector_on)
         self.create_service(Trigger, "/vica/mode/detector_off", self.on_detector_off)
@@ -475,6 +480,36 @@ class ModeNode(Node):
             ["stop", "--no-block", ml.DRIVE_TARGET],
             "주행 묶음을 내립니다(기본 묶음은 그대로).",
         )
+
+    def on_shutdown(self, _request, response):
+        """로봇 끄기: 주행 묶음 → 기본 묶음 → sync → 시스템 종료(앱 '로봇 끄기', 사용자 11-18).
+
+        바로 답하고, 끄는 일은 일회성 유닛 vica-shutdown 이 한다. 같은 이름이 이미 있으면 끄는 중이다.
+        """
+        refusal = ml.shutdown_refusal(self.collect())
+        if refusal is not None:
+            self.get_logger().warn(f"[로봇 끄기 거절] {refusal}")
+            response.success, response.message = False, refusal
+            return response
+        try:
+            done = subprocess.run(
+                ["systemd-run", "--user", f"--unit={SHUTDOWN_UNIT}", "--collect", "--no-block",
+                 str(SHUTDOWN_SCRIPT)],
+                capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            response.success, response.message = False, f"로봇 끄기를 시작하지 못했습니다: {exc}"
+            return response
+        if done.returncode != 0:
+            if "already" in done.stderr or "exists" in done.stderr:
+                response.success, response.message = True, "이미 끄는 중입니다."
+                return response
+            response.success = False
+            response.message = f"로봇 끄기를 시작하지 못했습니다: {done.stderr.strip()[:200]}"
+            return response
+        self.get_logger().warn("[로봇 끄기] 주행 묶음 → 기본 묶음 → sync → 시스템 종료")
+        response.success, response.message = True, "로봇을 끕니다. 곧 연결이 끊깁니다."
+        return response
 
     def poll_voice(self) -> None:
         """음성 유닛의 이번 기동 저널에서 새 줄만 읽어 연결 알림을 만든다."""

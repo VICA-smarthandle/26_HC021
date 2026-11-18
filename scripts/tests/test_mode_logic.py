@@ -313,6 +313,21 @@ class StopRefusal(unittest.TestCase):
         self.assertIsNone(ml.drive_stop_refusal(snapshot(robot_moving=None)))
 
 
+class ShutdownRefusal(unittest.TestCase):
+    """앱 '로봇 끄기'(사용자 11-18): 움직이는 중·지도 그리기 중이면 거절한다."""
+
+    def test_refused_while_moving(self):
+        self.assertIsNotNone(ml.shutdown_refusal(snapshot(robot_moving=True)))
+
+    def test_refused_while_mapping(self):
+        # 저장 안 한 지도를 잃는다.
+        self.assertIn("지도 그리기", ml.shutdown_refusal(snapshot(mapping_state="mapping")))
+
+    def test_allowed_when_still_and_idle(self):
+        self.assertIsNone(ml.shutdown_refusal(snapshot()))
+        self.assertIsNone(ml.shutdown_refusal(snapshot(robot_moving=None)))
+
+
 class CommandLineCandidates(unittest.TestCase):
     """명령줄을 읽을 프로세스만 고른다. 매 초 전부 읽으면 노드가 CPU 를 14~19 % 쓴다(11-14 실측)."""
 
