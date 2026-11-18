@@ -140,6 +140,24 @@ def nav2_phase(lines: list[str], age_sec: float | None = None) -> str:
     return "starting"
 
 
+def settle_nav2_phase(previous: str | None, lines: list[str] | None, age_sec: float | None) -> str:
+    """같은 Nav2 호출에서 저널을 다시 읽은 결과로 단계를 정한다.
+
+    `lines` 가 None 이면 저널을 못 읽은 것(시한 초과·오류)이다. 직전 판정을 그대로 두고, 없으면 starting.
+    이미 waiting_pose·active 를 본 호출은 멈춤(stalled)으로 내려가지 않는다 — 저널이 지워지거나
+    일부만 읽혀 '초기 위치' 줄이 안 보여도 진행은 이미 확인했다. 기동 실패(aborted)는 그대로 우선한다.
+
+    11-17 21:33 사고: 주행 중 flutter 빌드로 저널이 약 10 s 멈춰 조회(5 s 시한)가 실패했고, 빈 목록을
+    판정해 23분째 초기 위치를 기다리던 Nav2 를 '멈춤'으로 보고 자동 재시도로 껐다 켰다.
+    """
+    if lines is None:
+        return previous or "starting"
+    phase = nav2_phase(lines, age_sec)
+    if phase == "stalled" and previous in ("waiting_pose", "active"):
+        return previous
+    return phase
+
+
 def _state(snap: Snapshot, unit: str) -> str:
     return snap.units.get(unit, ("inactive", "dead", ""))[0]
 

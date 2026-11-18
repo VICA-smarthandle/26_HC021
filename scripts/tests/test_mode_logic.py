@@ -153,6 +153,32 @@ class Nav2Phase(unittest.TestCase):
         self.assertEqual(ml.nav2_phase([self.POSE], age_sec=600), "waiting_pose")
         self.assertEqual(ml.nav2_phase([self.ABORT], age_sec=600), "aborted")
 
+    # 11-17 21:33 사고: 주행 중 flutter 빌드로 저널이 약 10 s 멈춰 저널 조회(5 s 시한)가 실패했다.
+    # 빈 목록으로 판정해 23분째 초기 위치를 기다리던 Nav2 를 '멈춤'으로 보고 자동 재시도로 껐다 켰다.
+    def test_failed_read_keeps_the_previous_phase(self):
+        late = ml.NAV2_STALL_SEC * 15
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", None, late), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("active", None, late), "active")
+        self.assertEqual(ml.settle_nav2_phase("starting", None, late), "starting")
+
+    def test_failed_read_without_a_previous_phase_is_starting(self):
+        self.assertEqual(ml.settle_nav2_phase(None, None, ml.NAV2_STALL_SEC * 15), "starting")
+
+    def test_progress_seen_never_falls_back_to_stalled(self):
+        # 저널이 지워지거나 일부만 읽혀 '초기 위치' 줄이 없어도 이미 본 진행은 그대로다.
+        late = ml.NAV2_STALL_SEC * 15
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [], late), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("active", [], late), "active")
+
+    def test_a_real_abort_still_wins(self):
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [self.POSE, self.ABORT], 600), "aborted")
+
+    def test_settled_phase_matches_a_fresh_read_otherwise(self):
+        self.assertEqual(ml.settle_nav2_phase(None, [], ml.NAV2_STALL_SEC), "stalled")
+        self.assertEqual(ml.settle_nav2_phase("starting", [], ml.NAV2_STALL_SEC), "stalled")
+        self.assertEqual(ml.settle_nav2_phase("starting", [self.POSE], 30), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [self.POSE, self.ACTIVE], 30), "active")
+
     def test_other_lifecycle_managers_do_not_count(self):
         # collision_monitor 관리자는 12초 재시도 때 늘 'Failed to bring up' 을 남긴다.
         other = self.ABORT.replace("lifecycle_manager_navigation", "lifecycle_manager_collision_monitor")

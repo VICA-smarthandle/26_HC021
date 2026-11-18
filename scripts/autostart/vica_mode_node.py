@@ -101,6 +101,7 @@ class ModeNode(Node):
         # 사라질 수 있다 — 11-17 실기에서 한 번 사라짐). 같은 ID 는 다시 처리하지 않고 결과만 다시 낸다.
         self.handled_map_requests: collections.deque = collections.deque(maxlen=32)
         self.nav2_cache: tuple[str, str, float] | None = None   # (호출 ID, 단계, 읽은 시각)
+        self.nav2_read_failed = False   # 직전 저널 조회가 실패했는가(경고를 한 번만 남기려고)
         self.last_state = None
         # 자동 재시도를 이미 쓴 주행 묶음(그 묶음이 active 가 된 시각, systemd 단조 μs). 묶음을
         # 새로 올리면 값이 바뀌어 다시 한 번 쓸 수 있다. 노드가 다시 뜨면 잊는다 — 그때는 한 번 더.
@@ -208,15 +209,21 @@ class ModeNode(Node):
         now = time.monotonic()
         if cached and cached[0] == inv and (cached[1] in ("active", "aborted") or now - cached[2] < 2.0):
             return cached[1]
+        previous = cached[1] if cached and cached[0] == inv else None
         try:
             out = subprocess.run(
                 ["journalctl", "--user", f"_SYSTEMD_INVOCATION_ID={inv}", "-o", "cat",
                  "--no-pager", "-g", NAV2_JOURNAL_GREP],
                 capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT,
             ).stdout.splitlines()
-        except (OSError, subprocess.TimeoutExpired):
-            out = []
-        phase = ml.nav2_phase(out, age_sec)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            # 못 읽은 것을 '줄이 없다'로 보지 않는다(11-17 21:33 사고). 직전 판정을 유지한다.
+            out = None
+            if not self.nav2_read_failed:
+                self.get_logger().warn(
+                    f"[Nav2 단계] 저널을 못 읽음({type(exc).__name__}) — 직전 판정 유지: {previous or 'starting'}")
+        self.nav2_read_failed = out is None
+        phase = ml.settle_nav2_phase(previous, out, age_sec)
         self.nav2_cache = (inv, phase, now)
         return phase
 
