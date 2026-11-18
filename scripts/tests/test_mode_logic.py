@@ -313,6 +313,32 @@ class StopRefusal(unittest.TestCase):
         self.assertIsNone(ml.drive_stop_refusal(snapshot(robot_moving=None)))
 
 
+class PaneNodes(unittest.TestCase):
+    """유닛 밖(칸·터미널)에서 뜬 주행 노드(사용자 11-18 B안). 앱은 노드 목록(/rosapi/nodes) 대신 이것을 본다 —
+    강제 종료된 노드가 그 목록에 20 s 남아 주행을 끈 뒤 카드가 30 s 늦게 바뀌었다."""
+
+    def test_none_while_units_run_them(self):
+        self.assertEqual(ml.derive_status(snapshot(), MANIFEST)["pane_nodes"], [])
+
+    def test_none_when_everything_is_off(self):
+        self.assertEqual(ml.derive_status(idle_snapshot(), MANIFEST)["pane_nodes"], [])
+
+    def test_nav2_from_a_terminal_is_listed(self):
+        snap = idle_snapshot(procs={"bt_navigator": 1, "amcl": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], ["amcl", "bt_navigator"])
+
+    def test_names_shared_with_mapping_are_left_out(self):
+        # 지도 그리기도 ekf_node·encoder_feedback·cartographer 를 띄운다. 그것만으로 '칸 Nav2' 가 아니다.
+        snap = idle_snapshot(procs={"ekf_node": 1, "encoder_feedbac": 1, "cartographer_no": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], [])
+
+    def test_units_still_stopping_are_not_counted(self):
+        # 묶음을 내리는 동안은 유닛이 deactivating 이고 프로세스가 아직 있다 — 칸에서 띄운 것이 아니다.
+        snap = idle_snapshot(units={"vica-nav2.service": ("deactivating", "stop-sigterm", "")},
+                             procs={"bt_navigator": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], [])
+
+
 class ShutdownRefusal(unittest.TestCase):
     """앱 '로봇 끄기'(사용자 11-18): 움직이는 중·지도 그리기 중이면 거절한다."""
 

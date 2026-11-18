@@ -190,6 +190,25 @@ def _duplicated(snap: Snapshot, manifest: dict) -> list[str]:
     return dup
 
 
+# 지도 그리기와 같이 쓰는 이름. 이것만 떠 있으면 '칸에서 띄운 주행 노드'로 보지 않는다.
+MAPPING_SHARED = frozenset({"ekf_node", "encoder_feedbac", "cartographer_no", "cartographer_oc"})
+
+
+def pane_nodes(snap: Snapshot, manifest: dict) -> list[str]:
+    """유닛 밖(칸·터미널)에서 뜬 주행 노드의 감시 이름. 그 주행 유닛이 꺼져(inactive·failed) 있는데 프로세스가 있다.
+
+    사용자 11-18 B안: 앱은 노드 목록(/rosapi/nodes) 대신 이것으로 '칸에서 띄운 Nav2' 를 가린다. 강제 종료된
+    노드는 그 목록에 20 s 남아(FastDDS 수명, 11-18 측정) 주행을 끈 뒤 모드 선택 카드가 30 s 늦게 바뀌었다.
+    내려가는 중(deactivating)인 유닛의 프로세스는 넣지 않는다.
+    """
+    names: set[str] = set()
+    for entry in _bundle(manifest, "drive").values():
+        if _state(snap, entry["unit"]) not in ("inactive", "failed"):
+            continue
+        names.update(n for n in entry.get("guard", ()) if n not in MAPPING_SHARED and snap.procs.get(n, 0))
+    return sorted(names)
+
+
 def _bundle(manifest: dict, bundle: str) -> dict:
     return {k: v for k, v in manifest.items() if v["bundle"] == bundle}
 
@@ -231,6 +250,7 @@ def _derive_core(snap: Snapshot, manifest: dict) -> dict:
         "failed_units": failed,
         "missing_nodes": missing,
         "duplicated": _duplicated(snap, manifest),
+        "pane_nodes": pane_nodes(snap, manifest),
         "can_up": snap.can_up,
         # 지난 정지에서 시한을 넘겨 강제 종료된 주행 유닛(systemd Result=timeout). 다시 켜면 지워진다.
         "stop_timeouts": sorted(k for k, e in drive.items()
