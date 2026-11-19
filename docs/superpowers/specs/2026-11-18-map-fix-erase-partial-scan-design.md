@@ -171,7 +171,7 @@ score_before, score_after, added, removed, cells:[[x,y,kind]…], reason}`.
   - 서비스가 없다(Nav2 꺼짐): 파일만 쓰고 성공으로 답한다. `applied=false`, `no_nav2`, 문구는 금지구역과
     같은 `Nav2가 실행되면 적용됩니다.`
   - 실패 응답: 방금 쓴 파일을 백업에서 되돌리고 `apply_failed`.
-  - 10 s 안에 응답 없음: 이미 반영됐을 수 있어 파일은 둔다. `applied=false`, `apply_timeout`. 노드가
+  - 5 s 안에 응답 없음(11-19 실기 뒤 10 → 5 s, 응답과 따로 `/map` 의 `map_load_time` 으로도 확인): 이미 반영됐을 수 있어 파일은 둔다. `applied=false`, `apply_timeout`. 노드가
     쉬는 중일 때 5 s 마다 같은 파일로 `load_map` 을 다시 걸고, 성공하면 그만둔다.
 - 끝 알림: `applied=true` 면 `지도를 수정했습니다.`, 아니면 로봇이 보낸 `message` 를 그대로 띄운다.
 - 미션 알림(11-19 사용자): `erase`·`scan_apply`·`undo` 가 성공했을 때 미션이 켜져 있으면 응답
@@ -215,7 +215,8 @@ score_before, score_after, added, removed, cells:[[x,y,kind]…], reason}`.
 - **구분되지 않는 축은 거부하지 않는다(11-19 실기 뒤 사용자 결정 — "좁은 범위 스캔을 거부하게 되는 건 불편하다").**
   그 축만 출발 자세(AMCL — 지금 주행에 쓰는 위치)를 두고 통과한다(`hold_axes`). 벽이 그 축을 정해 주지 못하므로
   맞춘 값이 낫다는 근거가 없고, AMCL 값을 두면 고친 칸이 Nav2 가 믿는 자리와 맞는다. `scan_check.ambiguous`·
-  세션 상태의 `ambiguous` 에 그 축을 그대로 알리고, 앱은 미리보기에 안내 한 줄을 띄운다(문구는 목업 승인 뒤).
+  세션 상태의 `ambiguous` 에 그 축을 그대로 알리고, 앱은 미리보기에 안내 두 줄을 띄운다(캔버스 103, 사용자 문구):
+  "앞뒤 위치는 벽으로 맞추지 못해 지금 로봇 위치를 사용합니다." / "문틀이나 벽 끝이 조금 어긋날 수 있습니다."
   **부작용 대책(같은 날)**: 그 축의 AMCL 오차는 그대로 지도에 들어간다(실기: AMCL σ 7 cm, 스캔과 실제 차이
   12~16 cm). 그래서 ① 부분 스캔 첫 맞춤이 구분 안 되면 물러나기(5 s) 뒤 사람이 비킨 스캔으로 한 번 더 맞춘다
   (그 스캔이 2 s 안에 안 오면 `no_pose`) ② `/amcl_pose` 공분산을 로봇 기준으로 돌려, 구분 안 되는 축이 모두
@@ -307,7 +308,7 @@ score_before, score_after, added, removed, cells:[[x,y,kind]…], reason}`.
 | 77 확인 팝업 | `선택한 구역을 지울까요?` → `erase` |
 | 78 `지도 다시 스캔하기` | 로봇 위치(`/robot_status` x·y)에 반경 원. 범위 1·2·3 m(처음 2 m). 들어올 때 `scan_check` 를 한 번 불러 `위치 맞춤` 과 라이다 점(`hits`)을 그린다 |
 | 79 물러나기·스캔 | `scan_start` 뒤 토픽으로 단계·남은 초. `중지` = `scan_cancel` |
-| 80 미리보기 | `cells` 를 지도 위에 그린다(새로 생김 짙은 색, 없어짐 주황 점선). `적용` = `scan_apply`, `버리기` = `scan_discard` |
+| 80 미리보기 | `cells` 를 지도 위에 **실제 크기 그대로** 그린다(새로 생김 짙은 청록, 없어짐 주황 — 11-19 실기 뒤 사용자: 2 px·6 px 로 키운 안은 버림, 자세히 보려면 지도 확대). `적용` = `scan_apply`, `버리기` = `scan_discard` |
 | 81 못 할 때 | `low_match`·`ambiguous`·`moved`·`no_change`·`no_pose` 팝업 |
 | 82 수정한 뒤 | `최근 수정` 줄과 `되돌리기`(가장 최근 줄에만) → 확인 팝업 → `undo` |
 
