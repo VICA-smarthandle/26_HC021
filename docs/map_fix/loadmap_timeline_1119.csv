@@ -1,0 +1,39 @@
+time,source,event
+1795084510.918111,map_server,map_server: LoadMap 받음
+1795084510.979141,amcl,AMCL: 새 지도 받음
+1795084520.937810,map_server,map_server: LoadMap 받음
+1795084521.000587,amcl,AMCL: 새 지도 받음
+1795084530.980627,map_server,map_server: LoadMap 받음
+1795084531.043927,amcl,AMCL: 새 지도 받음
+1795084541.056621,map_server,map_server: LoadMap 받음
+1795084541.108776,amcl,AMCL: 새 지도 받음
+1795084551.064636,map_server,map_server: LoadMap 받음
+1795084551.113291,amcl,AMCL: 새 지도 받음
+1795084561.101370,map_server,map_server: LoadMap 받음
+1795084561.169541,amcl,AMCL: 새 지도 받음
+1795084571.112528,map_server,map_server: LoadMap 받음
+1795084571.174364,amcl,AMCL: 새 지도 받음
+1795085087.178027,map_server,map_server: LoadMap 받음
+1795085087.228721,amcl,AMCL: 새 지도 받음
+1795089441.899708,amcl,AMCL: 새 지도 받음
+1795089819.586811,map_server,map_server: LoadMap 받음
+1795089819.632260,amcl,AMCL: 새 지도 받음
+1795089923.612004,map_server,map_server: LoadMap 받음
+1795089923.655263,amcl,AMCL: 새 지도 받음
+1795089946.860459,map_server,map_server: LoadMap 받음
+1795089946.916196,amcl,AMCL: 새 지도 받음
+1795089964.548342,map_server,map_server: LoadMap 받음
+1795089964.598206,amcl,AMCL: 새 지도 받음
+1795089994.554860,map_server,map_server: LoadMap 받음
+1795089994.615459,amcl,AMCL: 새 지도 받음
+1795089997.892964,map_server,map_server: LoadMap 받음
+1795089997.948894,amcl,AMCL: 새 지도 받음
+1795089819.644301,map_fix_node,map_fix_node: /map 으로 적용 확인
+1795089923.663043,map_fix_node,map_fix_node: /map 으로 적용 확인
+1795089946.923757,map_fix_node,map_fix_node: 응답으로 적용 확인
+1795089964.614182,map_fix_node,map_fix_node: /map 으로 적용 확인
+1795089994.619123,map_fix_node,map_fix_node: /map 으로 적용 확인
+1795089997.959472,map_fix_node,map_fix_node: 응답으로 적용 확인
+1795084520.938287235,map_fix_node,map_fix_node: apply_timeout(10 s 응답 없음)
+1795084571.200028079,map_fix_node,map_fix_node: 응답으로 적용 확인
+1795085087.240802540,map_fix_node,map_fix_node: 응답으로 적용 확인
