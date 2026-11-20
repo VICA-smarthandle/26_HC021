@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 
 import rclpy
+from geometry_msgs.msg import Twist
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -97,6 +98,8 @@ class ModeNode(Node):
         self.mapping: tuple[str, float] | None = None
         self.moving: tuple[bool, float] | None = None
         self.dialog: tuple[str, float] | None = None
+        # /cmd_vel_safe 가 0 이 아니었던 마지막 시각(monotonic). 마이크 점검·음성 노드 켜기 끄기의 '움직이는 중' 판정.
+        self.cmd_nonzero_at: float | None = None
         # 유닛 호출 ID → 그 기동이 읽은 지도 id. 찾은 것만 담는다.
         self.map_marks: dict[str, str] = {}
         # 마지막 지도 바꾸기 요청의 결과(mode_status.map_change). 노드가 다시 뜨면 잊는다.
@@ -137,6 +140,7 @@ class ModeNode(Node):
         self.create_subscription(String, "/vica/mapping_status", self.on_mapping, latched)
         self.create_subscription(RobotState, "/vica/robot_state", self.on_robot_state, 10)
         self.create_subscription(String, "/vica/mode/map_request", self.on_map_request, 5)
+        self.create_subscription(Twist, "/cmd_vel_safe", self.on_cmd_safe, 10)
 
         self.create_service(Trigger, "/vica/mode/drive_start", self.on_drive_start)
         self.create_service(Trigger, "/vica/mode/drive_stop", self.on_drive_stop)
@@ -144,6 +148,8 @@ class ModeNode(Node):
         self.create_service(Trigger, "/vica/mode/nav2_restart", self.on_nav2_restart)
         self.create_service(Trigger, "/vica/mode/detector_on", self.on_detector_on)
         self.create_service(Trigger, "/vica/mode/detector_off", self.on_detector_off)
+        self.create_service(Trigger, "/vica/mode/voice_on", lambda q, r: self.on_voice_node(r, True))
+        self.create_service(Trigger, "/vica/mode/voice_off", lambda q, r: self.on_voice_node(r, False))
         self.create_service(Trigger, "/vica/mode/voice_online", lambda q, r: self.on_voice(r, "online"))
         self.create_service(Trigger, "/vica/mode/voice_offline", lambda q, r: self.on_voice(r, "offline"))
         self.create_timer(TICK_SEC, self.tick)
@@ -175,6 +181,11 @@ class ModeNode(Node):
         with self.lock:
             self.moving = (bool(msg.is_moving), now)
             self.dialog = (str(msg.dialog_state), now)
+
+    def on_cmd_safe(self, msg: Twist) -> None:
+        if ml.twist_moving(msg.linear.x, msg.angular.z):
+            with self.lock:
+                self.cmd_nonzero_at = time.monotonic()
 
     # ---- 사실 모으기 ------------------------------------------------------------
     def scan_processes(self) -> tuple[dict[str, int], dict[str, int]]:
@@ -237,7 +248,7 @@ class ModeNode(Node):
             "show", "-p",
             "Id,ActiveState,SubState,Result,InvocationID,ActiveEnterTimestampMonotonic,"
             "ActiveExitTimestampMonotonic",
-            ml.BASE_TARGET, ml.DRIVE_TARGET, *self.units,
+            ml.BASE_TARGET, ml.DRIVE_TARGET, ml.MIC_CHECK_UNIT, *self.units,
         )
         units, invocations, entered = ml.parse_show(show.stdout)
         mono_us = time.monotonic() * 1e6   # systemd 의 ...Monotonic 과 같은 시계
@@ -259,6 +270,7 @@ class ModeNode(Node):
             mapping = self.mapping[0] if self.mapping else None
             moving = self.moving[0] if self.moving and now - self.moving[1] < FRESH_SEC else None
             dialog = self.dialog[0] if self.dialog and now - self.dialog[1] < FRESH_SEC else None
+            cmd_moving = self.cmd_nonzero_at is not None and now - self.cmd_nonzero_at < ml.CMD_MOVING_SEC
         return ml.Snapshot(
             units=units, procs=procs, cmdline_hits=hits,
             nav2_phase=self.nav2_phase(units, invocations, unit_age.get(NAV2_UNIT)),
@@ -269,6 +281,7 @@ class ModeNode(Node):
             stopping_sec=max(going_down) if going_down else None,
             voice_mode=self.voice_mode(),
             dialog_state=dialog,
+            cmd_moving=cmd_moving,
             current_map=self.read_current_map(),
             running_maps=self.running_maps(units, invocations),
         )
@@ -570,6 +583,15 @@ class ModeNode(Node):
             response, ml.detector_refusal(self.collect(), self.manifest),
             ["stop", "--no-block", unit],
             "감지기를 잠시 끕니다. 주행을 다시 켜면 다시 켜집니다.",
+        )
+
+    def on_voice_node(self, response, on: bool):
+        """음성 노드(vica-llm)만 켜거나 끈다. 점검 앱이 칩 점검 전에 끄고 끝나면 켠다."""
+        unit = self.manifest.get("llm", {}).get("unit", "vica-llm.service")
+        return self.run(
+            response, ml.voice_node_refusal(self.collect(), self.manifest, on),
+            ["start" if on else "stop", "--no-block", unit],
+            "음성 노드를 켭니다" if on else "음성 노드를 껐습니다",
         )
 
     def on_voice(self, response, mode: str):
