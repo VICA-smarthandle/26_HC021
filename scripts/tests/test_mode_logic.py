@@ -87,6 +87,53 @@ def idle_snapshot(**overrides):
     return snapshot(units=units, procs=procs, **overrides)
 
 
+class VoiceNodeRefusalTest(unittest.TestCase):
+    """음성 노드(vica-llm) 켜기·끄기 거절 규칙(11-19 설계)."""
+
+    def _with_check(self, state):
+        units = dict(snapshot().units)
+        units[ml.MIC_CHECK_UNIT] = (state, "stop-sigterm", "")
+        return snapshot(units=units)
+
+    def test_idle_driving_allows(self):
+        self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=False))
+        self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=True))
+
+    def test_refuses_when_robot_state_moving(self):
+        for on in (False, True):
+            self.assertEqual(ml.voice_node_refusal(snapshot(robot_moving=True), MANIFEST, on=on),
+                             ml.MOVING_REFUSAL)
+
+    def test_refuses_when_only_cmd_vel_safe_moving(self):
+        # 사람 접근·수동 주행·도킹은 robot_state.is_moving 이 거짓이다.
+        snap = snapshot(robot_moving=False, cmd_moving=True)
+        self.assertTrue(ml.robot_in_motion(snap))
+        self.assertEqual(ml.voice_node_refusal(snap, MANIFEST, on=False), ml.MOVING_REFUSAL)
+
+    def test_refuses_outside_drive_mode(self):
+        self.assertEqual(ml.voice_node_refusal(idle_snapshot(), MANIFEST, on=True), "주행 모드가 아닙니다.")
+
+    def test_refuses_without_voice_unit(self):
+        manifest = {k: v for k, v in MANIFEST.items() if k != "llm"}
+        self.assertEqual(ml.voice_node_refusal(snapshot(), manifest, on=True), "음성 유닛이 없습니다.")
+
+    def test_mic_check_deactivating_blocks_turning_on_only(self):
+        snap = self._with_check("deactivating")
+        self.assertTrue(ml.mic_check_active(snap))
+        self.assertEqual(ml.voice_node_refusal(snap, MANIFEST, on=True),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+        self.assertIsNone(ml.voice_node_refusal(snap, MANIFEST, on=False))
+
+    def test_mic_check_inactive_is_not_active(self):
+        self.assertFalse(ml.mic_check_active(snapshot()))
+        self.assertFalse(ml.mic_check_active(self._with_check("failed")))
+
+    def test_twist_moving_threshold(self):
+        self.assertFalse(ml.twist_moving(0.0, 0.0))
+        self.assertFalse(ml.twist_moving(0.0005, 0.0))
+        self.assertTrue(ml.twist_moving(0.0, -0.2))
+
+
 class ParseShow(unittest.TestCase):
     def test_reads_when_each_unit_became_active(self):
         text = SHOW.replace("InvocationID=2a7bbeb2412d40988548348501265d46",

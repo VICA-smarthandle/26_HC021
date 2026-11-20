@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 DRIVE_TARGET = "vica-drive.target"
 NAV2_UNIT = "vica-nav2.service"
 BASE_TARGET = "vica-base.target"
+# 마이크 점검기 유닛(앱 '마이크 점검', 11-19 설계). 모드 노드가 systemd-run 으로 띄운다.
+MIC_CHECK_UNIT = "vica-miccheck.service"
+# 최근 이 시간 안에 /cmd_vel_safe 가 0 이 아니었으면 움직이는 중으로 본다.
+CMD_MOVING_SEC = 1.0
+MOVING_REFUSAL = "로봇이 움직이는 중입니다. 멈춘 뒤 다시 누르세요."
 MAPPING_IDLE = ("idle", "", None)
 # 유닛이 active 가 된 뒤 노드가 다 뜰 때까지의 유예. 2026-11-14 실기에서 미션·감시가 18 s 걸렸다.
 # 그 사이 노드가 없다고 error 로 보이지 않게 한다.
@@ -77,6 +82,8 @@ class Snapshot:
     current_map: str = ""
     # 지도를 쥐는 유닛(MAP_TRACKED) → 이번 기동이 읽은 지도 id(실행 스크립트의 '[vica-map]' 줄). 모르면 없다.
     running_maps: dict[str, str] = field(default_factory=dict)
+    # 최근 CMD_MOVING_SEC 안에 /cmd_vel_safe 가 0 이 아니었다. robot_state.is_moving 은 사람 접근·수동 주행·도킹에서 거짓이라 따로 본다.
+    cmd_moving: bool = False
 
 
 def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
@@ -415,6 +422,34 @@ def voice_switch_refusal(snap: Snapshot) -> str | None:
     """음성을 바꾸면 음성 유닛을 다시 띄워 말이 끊긴다. 움직이는 중(안내 중 대화)에는 하지 않는다."""
     if snap.robot_moving:
         return "주행 중입니다. 정지한 뒤 바꿉니다."
+    return None
+
+
+def twist_moving(linear_x: float, angular_z: float) -> bool:
+    """/cmd_vel_safe 한 개가 0 이 아닌가(문턱 1e-3)."""
+    return abs(linear_x) > 1e-3 or abs(angular_z) > 1e-3
+
+
+def robot_in_motion(snap: Snapshot) -> bool:
+    """미션이 움직인다고 하거나, 최근 /cmd_vel_safe 가 0 이 아니었다."""
+    return bool(snap.robot_moving) or snap.cmd_moving
+
+
+def mic_check_active(snap: Snapshot) -> bool:
+    """점검 유닛이 뜨는 중·떠 있는 중·내려가는 중인가(내려가는 중에 칩을 되돌린다)."""
+    return _state(snap, MIC_CHECK_UNIT) in ("active", "activating", "deactivating")
+
+
+def voice_node_refusal(snap: Snapshot, manifest: dict, on: bool) -> str | None:
+    """음성 노드(vica-llm)만 켜거나 끌 때 거절할 이유. 순서: 유닛 없음 → 주행 모드 아님 → 움직임 → 점검 중(켤 때만)."""
+    if "llm" not in manifest:
+        return "음성 유닛이 없습니다."
+    if not drive_on(snap, manifest):
+        return "주행 모드가 아닙니다."
+    if robot_in_motion(snap):
+        return MOVING_REFUSAL
+    if on and mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
     return None
 
 
