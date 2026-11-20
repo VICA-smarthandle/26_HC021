@@ -99,6 +99,21 @@ class VoiceNodeRefusalTest(unittest.TestCase):
         self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=False))
         self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=True))
 
+    def test_turning_off_within_a_minute_of_start_is_refused(self):
+        # 11-20 실기: 켜고 2 s 만에 끄자 모델을 올리던 노드가 종료 신호를 무시해 20 s 뒤 강제 종료 → failed.
+        young = snapshot(unit_age={"vica-llm.service": 18.2})
+        self.assertEqual(ml.voice_node_refusal(young, MANIFEST, on=False),
+                         "음성 노드가 켜지는 중입니다. 42초 뒤 다시 누르세요.")
+        self.assertIsNone(ml.voice_node_refusal(young, MANIFEST, on=True))
+        old = snapshot(unit_age={"vica-llm.service": ml.VOICE_OFF_GRACE_SEC})
+        self.assertIsNone(ml.voice_node_refusal(old, MANIFEST, on=False))
+        # 나이를 모르면(기동 시각을 못 읽음) 막지 않는다.
+        self.assertIsNone(ml.voice_node_refusal(snapshot(unit_age={}), MANIFEST, on=False))
+
+    def test_moving_refusal_comes_before_starting_refusal(self):
+        young_moving = snapshot(unit_age={"vica-llm.service": 5.0}, robot_moving=True)
+        self.assertEqual(ml.voice_node_refusal(young_moving, MANIFEST, on=False), ml.MOVING_REFUSAL)
+
     def test_refuses_when_robot_state_moving(self):
         for on in (False, True):
             self.assertEqual(ml.voice_node_refusal(snapshot(robot_moving=True), MANIFEST, on=on),

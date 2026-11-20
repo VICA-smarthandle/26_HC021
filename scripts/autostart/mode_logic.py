@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -30,6 +31,9 @@ MIC_CHECK_LAUNCHER_ENV = "VICA_MIC_CHECK_LAUNCHER"
 # 최근 이 시간 안에 /cmd_vel_safe 가 0 이 아니었으면 움직이는 중으로 본다.
 CMD_MOVING_SEC = 1.0
 MOVING_REFUSAL = "로봇이 움직이는 중입니다. 멈춘 뒤 다시 누르세요."
+# 음성 유닛이 켜진 뒤 이 시간 안에는 끄지 않는다(사용자 11-20). 모델을 올리는 동안 노드가 종료 신호를
+# 무시해 TimeoutStopSec(20 s) 뒤 강제 종료 → failed 가 됐다(11-20 실기, 켜고 2 s 만에 끔).
+VOICE_OFF_GRACE_SEC = 60.0
 MAPPING_IDLE = ("idle", "", None)
 # 유닛이 active 가 된 뒤 노드가 다 뜰 때까지의 유예. 2026-11-14 실기에서 미션·감시가 18 s 걸렸다.
 # 그 사이 노드가 없다고 error 로 보이지 않게 한다.
@@ -495,7 +499,11 @@ def mic_check_command(voice_root: str, map_id: str, destinations: str | None) ->
 
 
 def voice_node_refusal(snap: Snapshot, manifest: dict, on: bool) -> str | None:
-    """음성 노드(vica-llm)만 켜거나 끌 때 거절할 이유. 순서: 유닛 없음 → 주행 모드 아님 → 움직임 → 점검 중(켤 때만)."""
+    """음성 노드(vica-llm)만 켜거나 끌 때 거절할 이유.
+
+    순서: 유닛 없음 → 주행 모드 아님 → 움직임 → 점검 중(켤 때만) → 켜진 지 1분 안(끌 때만).
+    켜진 시각을 모르면(unit_age 에 없음) 끄기를 막지 않는다.
+    """
     if "llm" not in manifest:
         return "음성 유닛이 없습니다."
     if not drive_on(snap, manifest):
@@ -504,6 +512,9 @@ def voice_node_refusal(snap: Snapshot, manifest: dict, on: bool) -> str | None:
         return MOVING_REFUSAL
     if on and mic_check_active(snap):
         return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
+    age = snap.unit_age.get(manifest["llm"]["unit"])
+    if not on and age is not None and age < VOICE_OFF_GRACE_SEC:
+        return f"음성 노드가 켜지는 중입니다. {math.ceil(VOICE_OFF_GRACE_SEC - age)}초 뒤 다시 누르세요."
     return None
 
 
