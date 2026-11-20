@@ -28,6 +28,12 @@ class VoiceMicNode(unittest.TestCase):
         self.assertIn("음성 노드를 켭니다", NODE)
         self.assertIn("음성 노드를 껐습니다", NODE)
 
+    def test_mic_check_services_and_launcher(self):
+        for s in ('"/vica/mode/mic_check_start"', '"/vica/mode/mic_check_stop"', "ml.mic_check_command",
+                  "ml.mic_check_side_stops", "ml.mic_check_start_refusal", "ml.mic_check_stop_refusal",
+                  "VICA_VOICE_ROOT", "마이크 점검을 시작합니다 · 준비 1~2분", "점검을 끝냅니다"):
+            self.assertIn(s, NODE)
+
 
 if __name__ == "__main__":
     unittest.main()

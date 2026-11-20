@@ -73,6 +73,9 @@ BRIDGE_WATCH_ON = os.environ.get("VICA_BRIDGE_WATCH", "1") != "0"
 # 유닛이 한다(systemd-run --user). 스크립트는 생성기가 bin 에 복사한 사본.
 SHUTDOWN_SCRIPT = HERE / "vica_shutdown.sh"
 SHUTDOWN_UNIT = "vica-shutdown"
+# 마이크 점검(앱, 2026-11-19). 점검기는 음성 저장소의 tools.mic_venue_check 를 일회성 유닛으로 띄운다.
+VOICE_ROOT = Path(os.environ.get("VICA_VOICE_ROOT", str(Path.home() / "VICA-smarthandle/vica-voice-llm")))
+DESTINATIONS_DIR = Path.home() / "vica_data" / "destinations"
 
 
 def systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -150,6 +153,8 @@ class ModeNode(Node):
         self.create_service(Trigger, "/vica/mode/detector_off", self.on_detector_off)
         self.create_service(Trigger, "/vica/mode/voice_on", lambda q, r: self.on_voice_node(r, True))
         self.create_service(Trigger, "/vica/mode/voice_off", lambda q, r: self.on_voice_node(r, False))
+        self.create_service(Trigger, "/vica/mode/mic_check_start", lambda q, r: self.on_mic_check_start(r))
+        self.create_service(Trigger, "/vica/mode/mic_check_stop", lambda q, r: self.on_mic_check_stop(r))
         self.create_service(Trigger, "/vica/mode/voice_online", lambda q, r: self.on_voice(r, "online"))
         self.create_service(Trigger, "/vica/mode/voice_offline", lambda q, r: self.on_voice(r, "offline"))
         self.create_timer(TICK_SEC, self.tick)
@@ -592,6 +597,40 @@ class ModeNode(Node):
             response, ml.voice_node_refusal(self.collect(), self.manifest, on),
             ["start" if on else "stop", "--no-block", unit],
             "음성 노드를 켭니다" if on else "음성 노드를 껐습니다",
+        )
+
+    def on_mic_check_start(self, response):
+        """점검기를 일회성 유닛으로 띄운다. 주행 중 감지기가 떠 있으면 먼저 내린다."""
+        snap = self.collect()
+        refusal = ml.mic_check_start_refusal(snap, self.manifest)
+        if refusal:
+            response.success, response.message = False, refusal
+            self.get_logger().warn(f"[거부] mic_check_start: {refusal}")
+            return response
+        try:
+            for unit in ml.mic_check_side_stops(snap, self.manifest):
+                systemctl("stop", "--no-block", unit)
+            dest = DESTINATIONS_DIR / snap.current_map / "destinations.yaml"
+            argv = ml.mic_check_command(
+                str(VOICE_ROOT), snap.current_map, str(dest) if snap.current_map and dest.is_file() else None)
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            response.success, response.message = False, f"systemctl 실패: {exc}"
+            return response
+        if done.returncode != 0:
+            response.success = False
+            response.message = f"systemctl 실패: {done.stderr.strip()[:200]}"
+            self.get_logger().error(f"[실패] mic_check_start: {done.stderr.strip()}")
+            return response
+        response.success, response.message = True, "마이크 점검을 시작합니다 · 준비 1~2분"
+        self.get_logger().info("[요청] mic_check_start")
+        self.tick()
+        return response
+
+    def on_mic_check_stop(self, response):
+        return self.run(
+            response, ml.mic_check_stop_refusal(self.collect()),
+            ["stop", "--no-block", ml.MIC_CHECK_UNIT], "점검을 끝냅니다",
         )
 
     def on_voice(self, response, mode: str):

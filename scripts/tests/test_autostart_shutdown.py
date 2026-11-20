@@ -26,6 +26,10 @@ class ShutdownScript(unittest.TestCase):
         steps = [body.index(s) for s in ("stop vica-drive.target", "stop vica-base.target", "\nsync", "systemctl poweroff")]
         self.assertEqual(steps, sorted(steps))
 
+    def test_mic_check_stopped_before_drive(self):
+        body = "\n".join(code_lines(SCRIPT))
+        self.assertLess(body.index("stop vica-miccheck.service"), body.index("stop vica-drive.target"))
+
     def test_keeps_going_when_a_stop_fails(self):
         self.assertNotRegex("\n".join(code_lines(SCRIPT)), r"set -[a-z]*e")
 

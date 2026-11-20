@@ -11,6 +11,8 @@
 set -u
 log() { echo "[로봇 끄기] $*"; }
 
+# 마이크 점검 중이면 먼저 내린다(점검기가 내려가며 reSpeaker 칩 설정을 되돌린다). 없으면 그냥 지나간다.
+systemctl --user stop vica-miccheck.service 2>/dev/null || true
 log "주행 묶음 내림"
 systemctl --user stop vica-drive.target || log "주행 묶음 정지 실패 — 이어서 진행"
 log "기본 묶음 내림"
