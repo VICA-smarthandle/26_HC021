@@ -415,12 +415,14 @@ def read_voice_mode(text: str) -> str:
     return value if value in VOICE_MODES else "offline"
 
 
-def detector_refusal(snap: Snapshot, manifest: dict) -> str | None:
-    """감지기 켜기·끄기를 거절할 이유. 주행 묶음 밖에서는 다루지 않는다."""
+def detector_refusal(snap: Snapshot, manifest: dict, on: bool = False) -> str | None:
+    """감지기 켜기·끄기를 거절할 이유. 주행 묶음 밖에서는 다루지 않는다. 점검 중에는 켜지 못한다(끄기는 허용)."""
     if "detector" not in manifest:
         return "감지기 유닛이 없습니다(--units --stage 2c)."
     if not drive_on(snap, manifest):
         return "주행 모드가 아닙니다."
+    if on and mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
     return None
 
 
@@ -474,7 +476,7 @@ def mic_check_stop_refusal(snap: Snapshot) -> str | None:
 
 
 def mic_check_side_stops(snap: Snapshot, manifest: dict) -> list[str]:
-    """점검을 시작하기 전에 같이 내릴 유닛. 주행 중 감지기가 마이크 쪽 자원을 쓰면 내린다."""
+    """점검을 시작하기 전에 같이 내릴 유닛. 말없이 다가가는 것을 막으려고 주행 중 감지기를 내린다(사용자 11-19 ①)."""
     det = manifest.get("detector")
     if det and drive_on(snap, manifest) and _state(snap, det["unit"]) in ("active", "activating"):
         return [det["unit"]]

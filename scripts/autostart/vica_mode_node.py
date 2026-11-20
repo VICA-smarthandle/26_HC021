@@ -5,6 +5,8 @@
     /vica/mode/drive_stop      std_srvs/Trigger   주행 묶음만 내림(기본 묶음·motor 는 그대로)
     /vica/mode/nav2_restart    std_srvs/Trigger   Nav2 유닛만 다시 띄움(기동 실패 때)
     /vica/mode/detector_on|off std_srvs/Trigger   ⑮ 감지기만 켜고 끔(잠시 끄기, 주행을 다시 켜면 켜짐)
+    /vica/mode/voice_on|off            Trigger      음성 노드(vica-llm)만 켜고 끔(점검 중에는 켤 수 없음)
+    /vica/mode/mic_check_start|stop    Trigger      마이크 점검기(vica-miccheck.service)를 띄우고 내림
     /vica/mode/voice_online|offline  Trigger      음성을 ⑫ 온라인 / ⑬ 오프라인 믿음으로(voice_mode 파일)
     /vica/mode/map_request     std_msgs/String    JSON {request_id, map_id} — 주행 지도 바꾸기(11-17).
                                                   결과는 mode_status.map_change(Trigger 는 인자가 없다)
@@ -577,7 +579,7 @@ class ModeNode(Node):
     def on_detector_on(self, _request, response):
         unit = self.manifest.get("detector", {}).get("unit", "vica-detector.service")
         return self.run(
-            response, ml.detector_refusal(self.collect(), self.manifest),
+            response, ml.detector_refusal(self.collect(), self.manifest, True),
             ["start", "--no-block", unit],
             "감지기를 켭니다(엔진을 올리는 데 10~20초).",
         )
@@ -591,7 +593,7 @@ class ModeNode(Node):
         )
 
     def on_voice_node(self, response, on: bool):
-        """음성 노드(vica-llm)만 켜거나 끈다. 점검 앱이 칩 점검 전에 끄고 끝나면 켠다."""
+        """음성 노드(vica-llm)만 켜거나 끈다. 점검 앱이 칩 점검 전에 끈다. 점검이 끝나도 자동으로 켜지 않는다(설계 7절, 켜기는 앱에서)."""
         unit = self.manifest.get("llm", {}).get("unit", "vica-llm.service")
         return self.run(
             response, ml.voice_node_refusal(self.collect(), self.manifest, on),

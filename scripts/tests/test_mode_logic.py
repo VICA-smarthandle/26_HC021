@@ -924,6 +924,13 @@ class MicCheckTest(unittest.TestCase):
             snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, state))
             self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "이미 점검 중입니다.")
 
+    def test_detector_on_refused_while_checking_but_off_allowed(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.detector_refusal(snap, MANIFEST, True),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+        self.assertIsNone(ml.detector_refusal(snap, MANIFEST, False))
+        self.assertIsNone(ml.detector_refusal(self._snap(), MANIFEST, True))
+
     def test_start_refuses_while_mapping(self):
         snap = idle_snapshot(mapping_state="running")
         self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "지도를 그리는 중입니다.")
