@@ -900,3 +900,93 @@ class BridgeWatchTest(unittest.TestCase):
         self.assertFalse(ml.bridge_message_is_ours('{"op":"publish","topic":"\\/robot_status","msg":{}}'))
         self.assertFalse(ml.bridge_message_is_ours('{"op":"status","msg":"x"}'))
         self.assertFalse(ml.bridge_message_is_ours("not json"))
+
+
+class MicCheckTest(unittest.TestCase):
+    """마이크 점검(앱 '마이크 점검', 11-19 설계) 시작·정지 거절 규칙과 실행 명령."""
+
+    def _snap(self, base=snapshot, units=None, **overrides):
+        merged = dict(units or {})
+        return base(units=merged, **overrides)
+
+    def _unit(self, name, state):
+        return {name: (state, "running", "success")}
+
+    def test_start_allowed_when_drive_off_and_voice_off(self):
+        # 모드 선택 화면 경로: 주행 꺼짐·음성 꺼짐.
+        self.assertIsNone(ml.mic_check_start_refusal(idle_snapshot(), MANIFEST))
+
+    def test_start_allowed_when_drive_on_but_voice_off_and_still(self):
+        self.assertIsNone(ml.mic_check_start_refusal(snapshot(), MANIFEST))
+
+    def test_start_refuses_when_already_running(self):
+        for state in ("active", "activating", "deactivating"):
+            snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, state))
+            self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "이미 점검 중입니다.")
+
+    def test_start_refuses_while_mapping(self):
+        snap = idle_snapshot(mapping_state="running")
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "지도를 그리는 중입니다.")
+
+    def test_start_refuses_when_cartographer_process(self):
+        snap = idle_snapshot(procs={"cartographer_no": 1})
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "지도를 그리는 중입니다.")
+
+    def test_start_refuses_when_moving(self):
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(robot_moving=True), MANIFEST), ml.MOVING_REFUSAL)
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(cmd_moving=True), MANIFEST), ml.MOVING_REFUSAL)
+
+    def test_start_refuses_when_voice_unit_up(self):
+        for state in ("active", "activating", "deactivating"):
+            snap = self._snap(units=self._unit("vica-llm.service", state))
+            self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST),
+                             "음성 노드가 켜져 있습니다. 먼저 끄세요.")
+
+    def test_start_refuses_when_voice_from_terminal(self):
+        expect = "터미널에서 띄운 음성이 있습니다. 그 칸을 끈 뒤 다시 누르세요."
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(procs={"vica_llm_node": 1}), MANIFEST), expect)
+        hit = MANIFEST["llm"]["guard_cmdline"]
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(cmdline_hits={hit: 1}), MANIFEST), expect)
+
+    def test_start_order_already_before_mapping(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"), mapping_state="running")
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "이미 점검 중입니다.")
+
+    def test_stop_refusal(self):
+        self.assertEqual(ml.mic_check_stop_refusal(snapshot()), "점검 중이 아닙니다.")
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertIsNone(ml.mic_check_stop_refusal(snap))
+
+    def test_side_stops_detector_only_when_drive_on_and_detector_up(self):
+        for state in ("active", "activating"):
+            snap = self._snap(units=self._unit("vica-detector.service", state))
+            self.assertEqual(ml.mic_check_side_stops(snap, MANIFEST), ["vica-detector.service"])
+        self.assertEqual(ml.mic_check_side_stops(snapshot(), MANIFEST), [])
+        self.assertEqual(ml.mic_check_side_stops(idle_snapshot(), MANIFEST), [])
+
+    def test_command(self):
+        cmd = ml.mic_check_command("/v", "", None)
+        self.assertEqual(cmd[:4], ["systemd-run", "--user", "--collect", f"--unit={ml.MIC_CHECK_UNIT}"])
+        self.assertIn("--setenv=VICA_MIC_CHECK_LAUNCHER=mode", cmd)
+        self.assertIn("--working-directory=/v", cmd)
+        self.assertIn("/v/.venv/bin/python", cmd)
+        self.assertEqual(cmd[cmd.index("--name"):], ["--name", "점검"])
+        self.assertNotIn("--destinations", cmd)
+        with_dest = ml.mic_check_command("/v", "map1", "a,b")
+        self.assertEqual(with_dest[-4:], ["--name", "map1", "--destinations", "a,b"])
+
+    def test_status_has_mic_check(self):
+        self.assertEqual(ml.derive_status(snapshot(), MANIFEST)["mic_check"],
+                         {"state": "inactive", "port": 8770})
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["mic_check"]["state"], "active")
+
+    def test_drive_start_refused_while_checking(self):
+        snap = idle_snapshot(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.drive_start_refusal(snap, MANIFEST),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+
+    def test_map_change_blocked_while_checking(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "deactivating"))
+        self.assertEqual(ml.map_change_block(snap, MANIFEST, "running"),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 바꾸세요.")

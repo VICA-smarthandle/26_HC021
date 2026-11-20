@@ -24,6 +24,9 @@ NAV2_UNIT = "vica-nav2.service"
 BASE_TARGET = "vica-base.target"
 # 마이크 점검기 유닛(앱 '마이크 점검', 11-19 설계). 모드 노드가 systemd-run 으로 띄운다.
 MIC_CHECK_UNIT = "vica-miccheck.service"
+# 점검기 웹소켓 포트와, 점검기가 '모드 노드가 띄웠다'를 알아보는 환경 변수 이름.
+MIC_CHECK_PORT = 8770
+MIC_CHECK_LAUNCHER_ENV = "VICA_MIC_CHECK_LAUNCHER"
 # 최근 이 시간 안에 /cmd_vel_safe 가 0 이 아니었으면 움직이는 중으로 본다.
 CMD_MOVING_SEC = 1.0
 MOVING_REFUSAL = "로봇이 움직이는 중입니다. 멈춘 뒤 다시 누르세요."
@@ -267,6 +270,7 @@ def _derive_core(snap: Snapshot, manifest: dict) -> dict:
         "detector": _state(snap, manifest["detector"]["unit"]) if "detector" in manifest else "none",
         "voice": _state(snap, manifest["llm"]["unit"]) if "llm" in manifest else "none",
         "voice_mode": snap.voice_mode,
+        "mic_check": {"state": _state(snap, MIC_CHECK_UNIT), "port": MIC_CHECK_PORT},
     }
 
     drive_states = {k: _state(snap, e["unit"]) for k, e in drive.items()}
@@ -328,6 +332,8 @@ def drive_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
     """주행 묶음을 올리면 안 되는 이유. 없으면 None. 이미 떠 있으면 None(같은 요청을 두 번 받아도 된다)."""
     if drive_on(snap, manifest):
         return None
+    if mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
     if snap.mapping_state not in MAPPING_IDLE:
         return f"지도 그리기 중입니다({snap.mapping_state}). 지도 그리기를 끝낸 뒤 주행을 시작합니다."
     for name in ("cartographer_no", "cartographer_oc"):
@@ -438,6 +444,52 @@ def robot_in_motion(snap: Snapshot) -> bool:
 def mic_check_active(snap: Snapshot) -> bool:
     """점검 유닛이 뜨는 중·떠 있는 중·내려가는 중인가(내려가는 중에 칩을 되돌린다)."""
     return _state(snap, MIC_CHECK_UNIT) in ("active", "activating", "deactivating")
+
+
+def mic_check_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
+    """마이크 점검을 시작하면 안 되는 이유. 없으면 None(주행 꺼짐·음성 꺼짐인 모드 선택 화면도 허용)."""
+    if mic_check_active(snap):
+        return "이미 점검 중입니다."
+    if snap.mapping_state not in MAPPING_IDLE or any(
+            snap.procs.get(name, 0) for name in ("cartographer_no", "cartographer_oc")):
+        return "지도를 그리는 중입니다."
+    if robot_in_motion(snap):
+        return MOVING_REFUSAL
+    llm = manifest.get("llm")
+    if llm:
+        if _state(snap, llm["unit"]) in ("active", "activating", "deactivating"):
+            return "음성 노드가 켜져 있습니다. 먼저 끄세요."
+        pattern = llm.get("guard_cmdline")
+        if (any(snap.procs.get(n, 0) for n in llm.get("guard", ()))
+                or (pattern and snap.cmdline_hits.get(pattern, 0) > 0)):
+            return "터미널에서 띄운 음성이 있습니다. 그 칸을 끈 뒤 다시 누르세요."
+    return None
+
+
+def mic_check_stop_refusal(snap: Snapshot) -> str | None:
+    """점검을 멈추라는 요청을 거절할 이유."""
+    if not mic_check_active(snap):
+        return "점검 중이 아닙니다."
+    return None
+
+
+def mic_check_side_stops(snap: Snapshot, manifest: dict) -> list[str]:
+    """점검을 시작하기 전에 같이 내릴 유닛. 주행 중 감지기가 마이크 쪽 자원을 쓰면 내린다."""
+    det = manifest.get("detector")
+    if det and drive_on(snap, manifest) and _state(snap, det["unit"]) in ("active", "activating"):
+        return [det["unit"]]
+    return []
+
+
+def mic_check_command(voice_root: str, map_id: str, destinations: str | None) -> list[str]:
+    """점검기를 일회성 유닛으로 띄우는 명령. --collect 로 실패한 같은 이름 유닛이 다음 시작을 막지 않게 한다."""
+    cmd = ["systemd-run", "--user", "--collect", f"--unit={MIC_CHECK_UNIT}",
+           f"--setenv={MIC_CHECK_LAUNCHER_ENV}=mode", "--setenv=PYTHONUNBUFFERED=1",
+           f"--working-directory={voice_root}", f"{voice_root}/.venv/bin/python", "-m",
+           "tools.mic_venue_check", "--name", map_id or "점검"]
+    if destinations:
+        cmd += ["--destinations", destinations]
+    return cmd
 
 
 def voice_node_refusal(snap: Snapshot, manifest: dict, on: bool) -> str | None:
@@ -576,6 +628,8 @@ def parse_map_mark(lines: list[str]) -> str:
 
 def map_change_block(snap: Snapshot, manifest: dict, state: str) -> str | None:
     """지금 로봇 상태 때문에 주행 지도를 바꿀 수 없는 이유. 없으면 None. state 는 derive_status 의 state."""
+    if mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 바꾸세요."
     if snap.mapping_state not in MAPPING_IDLE:
         return "지도 그리는 중엔 불가"
     if any(snap.procs.get(name, 0) for name in ("cartographer_no", "cartographer_oc")):
