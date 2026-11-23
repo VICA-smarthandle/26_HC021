@@ -21,7 +21,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import locerr as le  # noqa: E402
 
-VERSION = 3
+VERSION = 4   # 4: map→odom 원본(mo)·/initialpose 시각 저장 — AMCL 보정량(compare.py)
 BASE = 'base_footprint'
 LASER = 'laser_frame'
 
@@ -45,8 +45,8 @@ def cache_path(bag_dir, map_yaml, cache_dir, rate):
 
 def read_bag(bag_dir):
     import bagio
-    D = {k: [] for k in ('mo', 'odom', 'wheel', 'imu', 'cmd', 'scan', 'static')}
-    topics = ['/scan', '/tf', '/tf_static', '/odom', '/wheel/odom', '/imu/base_link', '/cmd_vel_safe']
+    D = {k: [] for k in ('mo', 'odom', 'wheel', 'imu', 'cmd', 'scan', 'static', 'init')}
+    topics = ['/scan', '/tf', '/tf_static', '/odom', '/wheel/odom', '/imu/base_link', '/cmd_vel_safe', '/initialpose']
     for name, rt, m in bagio.read(bag_dir, topics):
         if name == '/scan':
             D['scan'].append((_stamp(m.header), rt, np.asarray(m.ranges, np.float32), m.angle_min, m.angle_increment))
@@ -66,6 +66,8 @@ def read_bag(bag_dir):
                 (_stamp(m.header), rt, p.position.x, p.position.y, _yaw(p.orientation), m.twist.twist.linear.x))
         elif name == '/imu/base_link':
             D['imu'].append((_stamp(m.header), m.angular_velocity.z))
+        elif name == '/initialpose':
+            D['init'].append(rt)
         else:
             D['cmd'].append((rt, m.linear.x, m.angular.z))
     for k in ('mo', 'odom', 'wheel', 'imu', 'cmd'):
@@ -127,6 +129,8 @@ def analyze(bag_dir, map_yaml, rate=2.0, key_step=0.25, key_yaw=math.radians(3.0
         ok = tt >= mo_t[0]
         P = np.array([le.compose(tuple(mo[j, 2:5]), ekf_at(t)) for j, t in zip(mi[ok], tt[ok])])
         out['path_t'], out['path'] = tt[ok], P
+        # AMCL 보정량(compare.py): map→odom 원본(시각은 스캔 기준으로 맞춘 것)
+        out['mo_t'], out['mo'] = mo_t, mo[:, 2:5]
     else:
         log('  ① map→odom 이 없다 — AMCL 위치 미설정. 위치추정 오차는 건너뜀')
     # ── ② 오도메트리 오차: 라이다 키프레임 사슬 ──
@@ -153,6 +157,7 @@ def analyze(bag_dir, map_yaml, rate=2.0, key_step=0.25, key_yaw=math.radians(3.0
         out['imu_t'], out['gz'] = D['imu'][:, 0], D['imu'][:, 1]
     if len(D['cmd']):
         out['cmd_t'], out['cmd_v'], out['cmd_w'] = D['cmd'][:, 0] - off, D['cmd'][:, 1], D['cmd'][:, 2]
+    out['init_t'] = np.array(D['init'], dtype=float) - off   # /initialpose(수동 초기 위치) 시각, 센서 시각 기준
     # 화면용 스캔(① 에 쓴 시각만, 거른 빔)
     if 'm_t' in out and len(out['m_t']):
         ts = set(np.round(out['m_t'], 6))
