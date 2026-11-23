@@ -139,6 +139,87 @@ config를 건드리지 않고 무엇을 만들지만 보여준다. 지도가 바
 칸을 더하거나 배치를 바꾸려면 스크립트의 `build_terms()`와 `PROFILES`를 고치고 다시
 실행한다.
 
+### 자동 기동 (systemd, 2026-11-14)
+
+전원을 켜면 기본 스택이 터미널 없이 뜬다. 칸과 같은 `build_terms()` 정의에서 systemd
+사용자 유닛을 만들므로 명령은 칸과 같다. 근거와 실기 결과는
+`devlog/2026-11-14-자동기동-systemd-0·1단계.md`.
+
+| 무엇 | 유닛 | 부팅 뒤(실측) |
+| --- | --- | --- |
+| ① can1 | `vica-can.service`(system) | 10초 |
+| ② display · ③ lidar · ⑪ app · web · map supervisor · ⑦ imu | `vica-<칸>.service` | 17초 |
+| ④ safety → ⑤ motor | `vica-safety` → `vica-motor` | 17초 → 20초 |
+| 컨테이너 → ⑥ d455 | `vica-container` → `vica-d455` | docker 가 뜬 뒤(35초 → 53초) |
+
+묶음은 `vica-base.target` 이다. 모드 노드(`vica-mode`)도 여기 들어 있다. ⑨ Nav2·⑩ Mission·⑭ 손잡이·
+⑪-1 감시·위치 확인·⑮ detector·음성(⑫ 또는 ⑬)은 **주행 묶음** `vica-drive.target` 이고, 모드 노드가 앱
+요청으로 켜고 끈다(아래). 주행 묶음이 켜져 있을 때 ⑨·⑩·⑫·⑬·⑮ 칸을 띄우면 `[중복]` 으로 거부된다.
+2단계 근거와 실기 결과는 `devlog/2026-11-16-자동기동-모드노드·안정화.md`.
+
+> **지금(2026-11-16) 부팅 등록은 꺼 두었다**(`vica-base.target` disabled). 부팅 뒤
+> `systemctl --user start vica-base.target` 으로 켠다. motor 가 같이 뜨므로 바퀴를 확인하고 켠다.
+
+**설치(최초 1회).** `feat/autostart` 작업 트리에서 한다.
+
+```bash
+sudo bash scripts/autostart/install.sh                          # can1 · linger · 저널 · nice 한도(재부팅 뒤 적용)
+python3 scripts/vica_terminator_layout.py --units --stage 2c    # 유닛 생성 (rc·config 는 안 쓴다)
+systemctl --user daemon-reload && systemctl --user enable vica-base.target
+```
+
+`--stage` 는 켤 범위다. `1a` 바퀴 무관 → `1b` 카메라 쪽 → `1c` safety·motor → `2a` 주행 묶음 →
+`2b` 모드 노드 → `2c` 감지기·음성. safety·motor 는 실행 스크립트가 nice −10 으로 올린다(권한이 없으면 경고 한 줄 뒤 기본
+우선순위로 뜬다 — `journalctl --user-unit=vica-safety | grep 우선순위`).
+
+**주행 묶음과 모드 노드.** 앱이 쓰는 경로와 같은 서비스다. 터미널에서는 `systemctl --user start|stop
+vica-drive.target` 으로도 된다.
+
+| 이름 | 하는 일 |
+| --- | --- |
+| `/vica/mode/drive_start` | 주행 묶음 켜기(약 40 s). 지도 그리기 중·칸에서 띄운 주행 노드가 있으면 거부 |
+| `/vica/mode/drive_stop` | 끄기. 움직이는 중이면 거부. Nav2 가 뜨는 중이면 '초기 위치 대기'까지(늦어도 45 s) 미뤘다 끈다 |
+| `/vica/mode/nav2_restart` | Nav2 만 다시 띄우기 |
+| `/vica/mode/detector_on` · `detector_off` | ⑮ 감지기만 켜고 끄기(잠시 끄기). 주행을 다시 켜면 켜진다 |
+| `/vica/mode/voice_offline` · `voice_online` | 음성을 로컬(⑬ midm2-mini) / 외부 API(⑫ 클라우드)로. `~/.config/vica-terminator/voice_mode` 에 남고, 음성이 떠 있으면 다시 띄운다(말이 끊김). 움직이는 중이면 거부. 파일이 없으면 로컬 |
+| `/vica/mode_status` | 상태 JSON(`mode`·`state`·`detail`·`nav2`·`safety`·`stop_timeouts`·`detector`·`voice`·`voice_mode` …) |
+
+앱에서는 모드 선택의 주행 카드 → [안내·배송] [경비] 시트(음성 드롭다운 포함), 주행 중에는 대시보드 맨 위
+'주행 노드' 카드(사람 감지 스위치·음성 드롭다운)로 쓴다.
+
+- Nav2 기동이 중단되거나 90 s 동안 진행이 없으면 모드 노드가 Nav2 만 **한 번** 다시 띄운다. 두 번째도
+  안 되면 `state=error` 로 두고 사람에게 넘긴다.
+- 끄는 데 30 s 가 넘거나 지난 정지에서 유닛이 시한 초과로 강제 종료됐으면 상태에 드러난다. 되풀이되면
+  재부팅한다(2026-11-16 앞 부팅에서 정지가 61~72 s 로 굳었고 재부팅으로 풀렸다).
+
+**쓰는 명령.**
+
+| 하려는 일 | 명령 |
+| --- | --- |
+| 상태 | `systemctl --user list-units 'vica-*' --all` |
+| 로그 | `journalctl --user-unit=vica-app -f` |
+| 한 유닛만 내리고 칸에서 직접 실행 | `systemctl --user stop vica-motor` 뒤 그 칸에서 실행 |
+| 지금만 전부 내림 | `systemctl --user stop vica-base.target` |
+| 부팅 등록까지 끔 | `systemctl --user disable --now vica-base.target` |
+| root 설치분 되돌림 | `sudo bash scripts/autostart/uninstall.sh` |
+
+**달라지는 것.**
+
+- ① can1 칸은 누르지 않는다. 부팅 때 UP 이 된다. 스크립트는 링크를 내리지 않는다.
+- 유닛으로 뜬 칸(②③④⑤⑦)을 터미네이터에서 열면 `[중복]` 으로 거부된다. 정상이다.
+- **⑪ app 칸은 실행하지 않는다.** rosbridge 는 프로세스 이름이 `python3` 라 그 칸의 중복
+  검사가 걸리지 않는다. 누르면 앱 브리지 노드가 두 벌이 된다.
+- **⑥ d455 칸에서 `./run_d455_cloud.sh` 를 치지 않는다.** 시작할 때 떠 있는 카메라를
+  `pkill -9` 한다.
+- 물리 버튼을 푼 채 켜면 부팅 약 26초 뒤 reset 없이 `READY_TO_GO` 가 된다. 그때부터 앱
+  teleop 이 통한다. 버튼을 누른 채 켜면 래치가 유지되고, 풀고 앱에서 reset 해야 한다.
+- 앱 브리지는 부팅 시점의 `maps/CURRENT_MAP` 으로 지도가 고정된다. 지도를 새로 그린 뒤에는
+  `systemctl --user restart vica-app` 을 한다.
+- safety·motor·모드 노드·앱 유닛은 FastDDS 공유메모리 없이 UDP 만 쓴다(`fastdds_udp_only.xml`).
+  끝난 프로세스의 공유메모리 잠금에 멈추지 않게 한 것이다(2026-11-14 safety 영구 정지).
+- ⑨ 칸을 쓸 때는 주행 묶음이 꺼져 있어야 한다. 모드 노드는 칸에서 띄운 Nav2 를 보면 주행 켜기를 거부한다.
+- 터미네이터 칸을 닫아도, 원격 화면이 끊겨도 유닛은 계속 돈다.
+
 ## 4. 음성·LLM 최초 1회 준비
 
 이 절은 장비를 새로 세팅하거나 `.venv`를 다시 만들 때만 수행한다. 배경 설명은

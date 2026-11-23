@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>마이크 주변 대화 시험</title>
+<style>
+/* 비교기(stt_bench_page.html)와 같은 색·모양. 외부 글꼴·라이브러리 없음 */
+:root {
+  --bg: #E9EDF0; --panel: #FFFFFF; --ink: #16212B; --muted: #5B6975; --line: #D3DAE0;
+  --accent: #2C63C9; --pass: #1D8650; --warn: #B98100; --fail: #C23C2A;
+  --btn: #16212B; --on-btn: #FFFFFF; --rec: #C23C2A;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0D1318; --panel: #151E25; --ink: #E3E9ED; --muted: #93A1AC; --line: #26313A;
+    --accent: #7DA6F2; --pass: #4CC98A; --warn: #F0BE4A; --fail: #F0745F;
+    --btn: #E3E9ED; --on-btn: #10171D; --rec: #F0745F;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+main { max-width: 440px; margin: 0 auto; padding: 12px 16px calc(24px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 12px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: grid; gap: 10px; min-width: 0; }
+h1 { margin: 4px 0 0; font-size: 18px; }
+h2 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+button { font: inherit; }
+.meta { font-size: 12px; color: var(--muted); }
+.busy { font-size: 13px; color: var(--warn); min-height: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.opt { text-align: left; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; min-height: 44px; }
+.opt b { display: block; font-size: 14px; }
+.opt span { display: block; font-size: 11px; color: var(--muted); }
+.opt.on { border: 2px solid var(--accent); }
+.chip { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.say { font-size: 30px; font-weight: 700; line-height: 1.25; text-align: center; padding: 4px 0; }
+.hint { font-size: 13px; color: var(--muted); text-align: center; }
+.hold { width: 100%; height: 120px; border-radius: 18px; border: 0; background: var(--btn); color: var(--on-btn); font-size: 20px; font-weight: 700; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: pointer; }
+.hold.on { background: var(--rec); color: #fff; }
+.hold:disabled { opacity: .45; }
+.ghost { font-weight: 600; font-size: 14px; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; width: 100%; }
+.ghost.arm { border-color: var(--fail); color: var(--fail); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 14px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.ok { color: var(--pass); font-weight: 700; } .bad { color: var(--fail); font-weight: 700; } .na { color: var(--muted); }
+.card { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 2px; font-size: 13px; }
+.card:first-child { border-top: 0; padding-top: 0; }
+.card .t { font-weight: 700; font-size: 14px; }
+.big { font-size: 15px; font-weight: 700; }
+.hist { display: grid; gap: 4px; font-size: 12px; font-family: var(--mono); color: var(--muted); }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+.toast.show { opacity: 1; }
+.conn { color: var(--fail); font-size: 13px; }
+</style>
+<style>html{zoom:3}</style></head>
+<body>
+<main>
+  <div>
+    <h1>마이크 주변 대화 시험</h1>
+    <div class="meta">칩 설정을 바꿔 가며, 손잡이에서 한 말과 옆사람 잡담이 소리 크기로 갈리는지 잽니다.</div>
+    <div id="conn" class="conn" hidden>젯슨과 연결이 끊겼습니다 — 다시 붙는 중…</div>
+    <div id="busy" class="busy"></div>
+  </div>
+
+  <section>
+    <h2>① 칩 설정</h2>
+    <div id="presets" class="grid2"></div>
+    <div id="chip" class="chip"></div>
+  </section>
+
+  <section>
+    <h2>② 누가 말하나</h2>
+    <div id="roles" class="grid2"></div>
+    <div id="say" class="say"></div>
+    <div id="hint" class="hint"></div>
+    <button id="next" class="ghost">다음 말</button>
+  </section>
+
+  <section>
+    <button id="hold" class="hold" disabled>누르고 말하기</button>
+    <div class="meta">누르는 동안만 녹음합니다. 옆사람 잡담도 누른 채로 5초쯤 녹음하세요.</div>
+  </section>
+
+  <section id="resbox" hidden>
+    <h2>방금 녹음 <span id="resmeta" class="meta"></span></h2>
+    <dl class="kv">
+      <dt>소리 크기</dt><dd id="r_rms"></dd>
+      <dt>귀 판단</dt><dd id="r_kept"></dd>
+      <dt>칩 말소리</dt><dd id="r_vad"></dd>
+      <dt>'비카야' 점수</dt><dd id="r_wake"></dd>
+      <dt>'멈춰' 점수</dt><dd id="r_stop"></dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>③ 설정별 결과</h2>
+    <div class="meta">여유 = 받아야 할 목소리(손잡이 + 앞쪽 사용자) 중 가장 작은 것 − 옆사람 잡담 중 가장 큰 것. + 이면 문턱 하나로 옆사람 말만 버릴 수 있습니다(6 dB 이상이면 넉넉함).</div>
+    <div id="sum"></div>
+  </section>
+
+  <section>
+    <h2>기록</h2>
+    <div id="hist" class="hist"></div>
+    <button id="finish" class="ghost">끝내기 (칩을 원래 값으로)</button>
+  </section>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let ws = null, holding = false, state = null, minRms = 0.008;
+
+  function toast(t) { const el = $("toast"); el.textContent = t; el.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove("show"), 3000); }
+  function send(o) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; } toast("젯슨과 연결이 안 돼 있습니다"); return false; }
+  function db(x) { return (20 * Math.log10(Math.max(x, 1e-9))).toFixed(1); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => { $("conn").hidden = true; };
+    ws.onclose = () => { $("conn").hidden = false; $("hold").disabled = true; setTimeout(connect, 1500); };
+    ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onMessage(m); };
+  }
+
+  function renderState(m) {
+    state = m; minRms = m.listen_min_rms;
+    const pr = $("presets"); pr.innerHTML = "";
+    m.presets.forEach((p) => {
+      const b = document.createElement("button"); b.className = "opt" + (p.key === m.preset ? " on" : "");
+      b.innerHTML = `<b></b><span></span>`; b.querySelector("b").textContent = p.label; b.querySelector("span").textContent = p.note;
+      b.onclick = () => { if (p.key !== m.preset) send({ cmd: "preset", key: p.key }); };
+      pr.appendChild(b);
+    });
+    const rl = $("roles"); rl.innerHTML = "";
+    m.roles.forEach((r) => {
+      const b = document.createElement("button"); b.className = "opt" + (r.key === m.role ? " on" : "");
+      b.innerHTML = "<b></b>"; b.querySelector("b").textContent = r.label;
+      b.onclick = () => send({ cmd: "role", key: r.key });
+      rl.appendChild(b);
+    });
+    const c = m.chip || {};
+    $("chip").textContent = Object.keys(c).length
+      ? `증폭 ${c.AGCONOFF ? "켬" : "끔"} · 최대 ×${(+c.AGCMAXGAIN).toFixed(1)} · 목표 ${(+c.AGCDESIREDLEVEL).toFixed(3)} · 지금 ×${(+c.AGCGAIN).toFixed(1)} · 말소리 감지 ${(+c.GAMMAVAD_SR).toFixed(1)}`
+      : "";
+    if (m.role === "user") {
+      $("say").textContent = m.phrase; $("hint").textContent = "손잡이를 잡은 자리에서 평소 목소리로"; $("next").hidden = false;
+    } else if (m.role === "userwake") {
+      $("say").textContent = m.phrase; $("hint").textContent = "손잡이 자리에서 '비카야' 뒤에 쉬지 않고 이어서"; $("next").hidden = true;
+    } else if (m.role.startsWith("far")) {
+      $("say").textContent = m.phrase; $("hint").textContent = "로봇 앞에 그 거리만큼 떨어져 서서, 로봇의 질문에 대답하듯 평소 목소리로"; $("next").hidden = false;
+    } else if (m.role.startsWith("shout")) {
+      $("say").textContent = "멈춰!"; $("hint").textContent = "그 거리에서 로봇을 세우려는 것처럼 크게 (사용자는 조용히)"; $("next").hidden = true;
+    } else {
+      $("say").textContent = "평소처럼 잡담"; $("hint").textContent = "그 거리에서 서로 이야기하듯 5초쯤 (로봇에게 말하지 않기)"; $("next").hidden = true;
+    }
+    $("hold").disabled = false;
+  }
+
+  function renderSummary(m) {
+    const box = $("sum"); box.innerHTML = "";
+    if (!m.presets.length) { box.innerHTML = '<div class="meta">아직 녹음이 없습니다.</div>'; return; }
+    m.presets.forEach((p) => {
+      const d = document.createElement("div"); d.className = "card";
+      const dist = Object.values(p.by_dist).map((x) => `${x.label} 최대 ${x.max_db} dB(${x.n})`).join(" · ") || "옆사람 녹음 없음";
+      let verdict = '<span class="na">사용자·옆사람 둘 다 녹음해야 판단</span>';
+      if (p.margin_db !== null) {
+        verdict = p.margin_db > 0
+          ? `<span class="ok">여유 +${p.margin_db} dB — 갈림</span> · 추천 문턱 ${p.suggest_rms} (지금 ${minRms})`
+          : `<span class="bad">여유 ${p.margin_db} dB — 안 갈림</span>`;
+      }
+      d.innerHTML = `<div class="t"></div>
+        <div>손잡이 사용자 최소 ${p.user.min_db ?? "—"} dB · 중간 ${p.user.med_db ?? "—"} dB (${p.user.n})</div>
+        <div>앞쪽 사용자(1~1.5 m) 최소 ${p.far.min_db ?? "—"} dB · 중간 ${p.far.med_db ?? "—"} dB (${p.far.n}) · 지금 문턱으로 버려짐 ${p.far_drop_now}</div>
+        <div></div>
+        <div class="big">${verdict}</div>
+        <div>지금 문턱으로 옆사람 통과 ${p.bystander_pass_now} · 사용자 버려짐 ${p.user_drop_now}</div>
+        <div>'비카야' 감지 ${p.wake} · <b>이어 말하기 '비카야' ${p.wake_cont}</b> · '멈춰' 감지 ${p.stop}</div>
+        <div><b>2 m 외친 '멈춰' — 문턱 0.5: ${p.shout2} · 0.3: ${p.shout2_low}</b> · 멀리 전체 ${p.far_stop}</div>`;
+      d.querySelector(".t").textContent = p.label;
+      d.children[2].textContent = dist;
+      box.appendChild(d);
+    });
+  }
+
+  function onMessage(m) {
+    if (m.type === "state") { renderState(m); return; }
+    if (m.type === "summary") { renderSummary(m); return; }
+    if (m.type === "busy") { $("busy").textContent = m.text || ""; $("hold").disabled = !!m.text; return; }
+    if (m.type === "toast") { toast(m.text); return; }
+    if (m.type === "rec") { $("hold").classList.toggle("on", m.on); $("hold").textContent = m.on ? "녹음 중… 떼면 끝" : "누르고 말하기"; return; }
+    if (m.type === "result") {
+      $("resbox").hidden = false;
+      const role = (state && state.roles.find((r) => r.key === m.role) || {}).label || m.role;
+      $("resmeta").textContent = `· ${role}${m.phrase ? " · " + m.phrase : ""} · ${m.dur}s`;
+      $("r_rms").textContent = `rms ${m.rms.toFixed(4)} (${m.rms_db} dB) · 최고 ${m.peak}${m.clip > 0.001 ? " · 찢어짐 " + (m.clip * 100).toFixed(1) + "%" : ""}`;
+      $("r_kept").innerHTML = m.kept_now ? '<span class="ok">받음</span>' : '<span class="na">버림 (너무 작음)</span>';
+      $("r_vad").textContent = m.vad === null ? "—" : `${Math.round(m.vad * 100)}%`;
+      $("r_wake").textContent = m.wake_a.toFixed(2); $("r_stop").textContent = m.stop_b.toFixed(2);
+      const h = document.createElement("div");
+      h.textContent = `${m.n}. ${m.preset} · ${role}${m.phrase ? " · " + m.phrase : ""} · ${m.rms_db} dB · 비 ${m.wake_a.toFixed(2)} · 멈 ${m.stop_b.toFixed(2)}`;
+      $("hist").prepend(h);
+      return;
+    }
+  }
+
+  // 누르는 동안만 듣는다. 손가락을 잡아 두므로(setPointerCapture) 버튼 밖에서 떼도 뗀 것으로 본다.
+  const hold = $("hold");
+  function down(e) { e.preventDefault(); if (hold.disabled || holding) return; holding = true; send({ cmd: "start" }); try { hold.setPointerCapture(e.pointerId); } catch (_) {} }
+  function up() { if (!holding) return; holding = false; send({ cmd: "stop" }); }
+  hold.addEventListener("pointerdown", down);
+  hold.addEventListener("pointerup", up);
+  hold.addEventListener("pointercancel", up);
+  hold.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  $("next").onclick = () => send({ cmd: "phrase" });
+  // 끝내기는 두 번 눌러 확정한다 — 휴대폰 확인 창이 막혀 명령이 안 가던 일(10-15 비교기)을 피한다.
+  const fin = $("finish");
+  fin.onclick = () => {
+    if (!fin.classList.contains("arm")) {
+      fin.classList.add("arm"); fin.textContent = "한 번 더 누르면 끝냅니다";
+      clearTimeout(fin._t); fin._t = setTimeout(() => { fin.classList.remove("arm"); fin.textContent = "끝내기 (칩을 원래 값으로)"; }, 4000);
+      return;
+    }
+    if (send({ cmd: "finish" })) { toast("끝냈습니다. 칩을 원래 값으로 되돌립니다."); fin.disabled = true; }
+  };
+const REPLAY = [{"type": "state", "preset": "gain2", "role": "near3", "phrase": "", "presets": [{"key": "base", "label": "지금 설정", "note": "⑫ 와 같음(.env 값 — 증폭 한도 줄이 없으면 ×31.6)"}, {"key": "gain8", "label": "증폭 최대 ×8", "note": "먼 소리를 덜 키운다"}, {"key": "gain2", "label": "증폭 최대 ×2", "note": "먼 소리를 거의 안 키운다"}, {"key": "agcoff", "label": "증폭 끔(고정 ×2)", "note": "거리 차이가 그대로 남는다"}, {"key": "vad3", "label": "말소리 감지 둔감 ×3", "note": "칩이 약한 목소리를 말로 덜 본다"}, {"key": "gain2vad3", "label": "증폭 ×2 + 감지 둔감 ×3", "note": "둘 다"}], "roles": [{"key": "user", "label": "사용자(손잡이)"}, {"key": "near1", "label": "옆사람 1 m"}, {"key": "near2", "label": "옆사람 2 m"}, {"key": "near3", "label": "옆사람 3 m"}], "listen_min_rms": 0.012, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}}, {"type": "result", "n": 1, "preset": "base", "role": "user", "phrase": "네", "dur": 1.44, "rms": 0.10343, "rms_db": -19.7, "peak": 0.773, "clip": 0.0, "vad": 0.5, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_001_base_user.wav"}, {"type": "result", "n": 2, "preset": "base", "role": "user", "phrase": "아니", "dur": 1.52, "rms": 0.2129, "rms_db": -13.4, "peak": 1.0, "clip": 0.0106, "vad": 0.57, "wake_a": 0.0, "stop_b": 0.002, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_002_base_user.wav"}, {"type": "result", "n": 3, "preset": "base", "role": "user", "phrase": "멈춰", "dur": 1.76, "rms": 0.22148, "rms_db": -13.1, "peak": 1.0, "clip": 0.0249, "vad": 0.44, "wake_a": 0.001, "stop_b": 0.964, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_003_base_user.wav"}, {"type": "result", "n": 4, "preset": "base", "role": "user", "phrase": "비카야", "dur": 1.68, "rms": 0.16251, "rms_db": -15.8, "peak": 1.0, "clip": 0.0027, "vad": 0.6, "wake_a": 0.878, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_004_base_user.wav"}, {"type": "result", "n": 5, "preset": "base", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.64, "rms": 0.11892, "rms_db": -18.5, "peak": 0.892, "clip": 0.0, "vad": 0.74, "wake_a": 0.994, "stop_b": 0.021, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_005_base_user.wav"}, {"type": "result", "n": 6, "preset": "base", "role": "near1", "phrase": "", "dur": 6.32, "rms": 0.01083, "rms_db": -39.3, "peak": 0.082, "clip": 0.0, "vad": 0.4, "wake_a": 0.001, "stop_b": 0.072, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_006_base_near1.wav"}, {"type": "result", "n": 7, "preset": "base", "role": "near2", "phrase": "", "dur": 5.84, "rms": 0.01814, "rms_db": -34.8, "peak": 0.136, "clip": 0.0, "vad": 0.49, "wake_a": 0.006, "stop_b": 0.002, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_007_base_near2.wav"}, {"type": "result", "n": 8, "preset": "base", "role": "near3", "phrase": "", "dur": 6.48, "rms": 0.01458, "rms_db": -36.7, "peak": 0.212, "clip": 0.0, "vad": 0.46, "wake_a": 0.0, "stop_b": 0.003, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 16.9477, "GAMMAVAD_SR": 15.0}, "wav": "take_008_base_near3.wav"}, {"type": "result", "n": 9, "preset": "gain8", "role": "user", "phrase": "네", "dur": 1.6, "rms": 0.11578, "rms_db": -18.7, "peak": 0.83, "clip": 0.0, "vad": 0.5, "wake_a": 0.0, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_009_gain8_user.wav"}, {"type": "result", "n": 10, "preset": "gain8", "role": "user", "phrase": "멈춰", "dur": 1.28, "rms": 0.24517, "rms_db": -12.2, "peak": 1.0, "clip": 0.0187, "vad": 0.67, "wake_a": 0.0, "stop_b": 0.851, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_010_gain8_user.wav"}, {"type": "result", "n": 11, "preset": "gain8", "role": "user", "phrase": "비카야", "dur": 1.52, "rms": 0.16198, "rms_db": -15.8, "peak": 1.0, "clip": 0.0013, "vad": 0.77, "wake_a": 0.991, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_011_gain8_user.wav"}, {"type": "result", "n": 12, "preset": "gain8", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.16, "rms": 0.09934, "rms_db": -20.1, "peak": 0.817, "clip": 0.0, "vad": 0.84, "wake_a": 0.713, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_012_gain8_user.wav"}, {"type": "result", "n": 13, "preset": "gain8", "role": "near1", "phrase": "", "dur": 4.0, "rms": 0.01209, "rms_db": -38.3, "peak": 0.219, "clip": 0.0, "vad": 0.39, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_013_gain8_near1.wav"}, {"type": "result", "n": 14, "preset": "gain8", "role": "near2", "phrase": "", "dur": 6.16, "rms": 0.02993, "rms_db": -30.5, "peak": 0.625, "clip": 0.0, "vad": 0.6, "wake_a": 0.032, "stop_b": 0.942, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_014_gain8_near2.wav"}, {"type": "result", "n": 15, "preset": "gain8", "role": "near3", "phrase": "", "dur": 5.44, "rms": 0.00613, "rms_db": -44.2, "peak": 0.047, "clip": 0.0, "vad": 0.37, "wake_a": 0.0, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 8.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 15.3012, "GAMMAVAD_SR": 15.0}, "wav": "take_015_gain8_near3.wav"}, {"type": "result", "n": 16, "preset": "gain2", "role": "user", "phrase": "네", "dur": 1.04, "rms": 0.03253, "rms_db": -29.8, "peak": 0.169, "clip": 0.0, "vad": 0.78, "wake_a": 0.0, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}, "wav": "take_016_gain2_user.wav"}, {"type": "result", "n": 17, "preset": "gain2", "role": "user", "phrase": "아니", "dur": 1.12, "rms": 0.06075, "rms_db": -24.3, "peak": 0.505, "clip": 0.0, "vad": 0.7, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}, "wav": "take_017_gain2_user.wav"}, {"type": "result", "n": 18, "preset": "gain2", "role": "user", "phrase": "멈춰", "dur": 1.52, "rms": 0.05843, "rms_db": -24.7, "peak": 0.548, "clip": 0.0, "vad": 0.69, "wake_a": 0.0, "stop_b": 0.954, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}, "wav": "take_018_gain2_user.wav"}, {"type": "result", "n": 19, "preset": "gain2", "role": "user", "phrase": "비카야", "dur": 1.6, "rms": 0.04892, "rms_db": -26.2, "peak": 0.318, "clip": 0.0, "vad": 0.67, "wake_a": 0.972, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}, "wav": "take_019_gain2_user.wav"}, {"type": "result", "n": 20, "preset": "gain2", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.4, "rms": 0.03562, "rms_db": -29.0, "peak": 0.286, "clip": 0.0, "vad": 0.81, "wake_a": 0.932, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}, "wav": "take_020_gain2_user.wav"}, {"type": "result", "n": 21, "preset": "gain2", "role": "near1", "phrase": "", "dur": 4.96, "rms": 0.0055, "rms_db": -45.2, "peak": 0.05, "clip": 0.0, "vad": 0.64, "wake_a": 0.0, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_021_gain2_near1.wav"}, {"type": "result", "n": 22, "preset": "gain2", "role": "near2", "phrase": "", "dur": 5.68, "rms": 0.0045, "rms_db": -46.9, "peak": 0.042, "clip": 0.0, "vad": 0.53, "wake_a": 0.0, "stop_b": 0.929, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_022_gain2_near2.wav"}, {"type": "result", "n": 23, "preset": "gain2", "role": "near2", "phrase": "", "dur": 5.44, "rms": 0.00465, "rms_db": -46.7, "peak": 0.035, "clip": 0.0, "vad": 0.58, "wake_a": 0.025, "stop_b": 0.058, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_023_gain2_near2.wav"}, {"type": "result", "n": 24, "preset": "gain2", "role": "near3", "phrase": "", "dur": 5.28, "rms": 0.00413, "rms_db": -47.7, "peak": 0.028, "clip": 0.0, "vad": 0.6, "wake_a": 0.0, "stop_b": 0.006, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_024_gain2_near3.wav"}, {"type": "result", "n": 25, "preset": "agcoff", "role": "user", "phrase": "네", "dur": 1.2, "rms": 0.03408, "rms_db": -29.4, "peak": 0.208, "clip": 0.0, "vad": 0.64, "wake_a": 0.0, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_025_agcoff_user.wav"}, {"type": "result", "n": 26, "preset": "agcoff", "role": "user", "phrase": "아니", "dur": 1.52, "rms": 0.0576, "rms_db": -24.8, "peak": 0.429, "clip": 0.0, "vad": 0.69, "wake_a": 0.001, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_026_agcoff_user.wav"}, {"type": "result", "n": 27, "preset": "agcoff", "role": "user", "phrase": "멈춰", "dur": 1.44, "rms": 0.05942, "rms_db": -24.5, "peak": 0.438, "clip": 0.0, "vad": 0.62, "wake_a": 0.0, "stop_b": 0.863, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_027_agcoff_user.wav"}, {"type": "result", "n": 28, "preset": "agcoff", "role": "user", "phrase": "비카야", "dur": 1.36, "rms": 0.06552, "rms_db": -23.7, "peak": 0.562, "clip": 0.0, "vad": 0.69, "wake_a": 0.001, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_028_agcoff_user.wav"}, {"type": "result", "n": 29, "preset": "agcoff", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.4, "rms": 0.04907, "rms_db": -26.2, "peak": 0.379, "clip": 0.0, "vad": 0.81, "wake_a": 0.901, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_029_agcoff_user.wav"}, {"type": "result", "n": 30, "preset": "agcoff", "role": "near1", "phrase": "", "dur": 6.08, "rms": 0.00622, "rms_db": -44.1, "peak": 0.049, "clip": 0.0, "vad": 0.8, "wake_a": 0.0, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_030_agcoff_near1.wav"}, {"type": "result", "n": 31, "preset": "agcoff", "role": "near2", "phrase": "", "dur": 5.76, "rms": 0.0047, "rms_db": -46.6, "peak": 0.038, "clip": 0.0, "vad": 0.81, "wake_a": 0.001, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_031_agcoff_near2.wav"}, {"type": "result", "n": 32, "preset": "agcoff", "role": "near3", "phrase": "", "dur": 1.68, "rms": 0.02756, "rms_db": -31.2, "peak": 0.235, "clip": 0.0, "vad": 0.43, "wake_a": 0.009, "stop_b": 0.01, "kept_now": true, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_032_agcoff_near3.wav"}, {"type": "result", "n": 33, "preset": "agcoff", "role": "near3", "phrase": "", "dur": 5.76, "rms": 0.00513, "rms_db": -45.8, "peak": 0.051, "clip": 0.0, "vad": 0.63, "wake_a": 0.0, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 0.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 15.0}, "wav": "take_033_agcoff_near3.wav"}, {"type": "result", "n": 34, "preset": "vad3", "role": "user", "phrase": "네", "dur": 1.2, "rms": 0.02616, "rms_db": -31.6, "peak": 0.154, "clip": 0.0, "vad": 0.6, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_034_vad3_user.wav"}, {"type": "result", "n": 35, "preset": "vad3", "role": "user", "phrase": "아니", "dur": 1.2, "rms": 0.03727, "rms_db": -28.6, "peak": 0.309, "clip": 0.0, "vad": 0.73, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_035_vad3_user.wav"}, {"type": "result", "n": 36, "preset": "vad3", "role": "user", "phrase": "멈춰", "dur": 1.12, "rms": 0.05005, "rms_db": -26.0, "peak": 0.394, "clip": 0.0, "vad": 0.7, "wake_a": 0.0, "stop_b": 0.094, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_036_vad3_user.wav"}, {"type": "result", "n": 37, "preset": "vad3", "role": "user", "phrase": "비카야", "dur": 1.2, "rms": 0.08421, "rms_db": -21.5, "peak": 0.592, "clip": 0.0, "vad": 0.64, "wake_a": 0.0, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_037_vad3_user.wav"}, {"type": "result", "n": 38, "preset": "vad3", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.0, "rms": 0.06746, "rms_db": -23.4, "peak": 0.683, "clip": 0.0, "vad": 0.89, "wake_a": 0.797, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_038_vad3_user.wav"}, {"type": "result", "n": 39, "preset": "vad3", "role": "near1", "phrase": "", "dur": 4.8, "rms": 0.01629, "rms_db": -35.8, "peak": 0.135, "clip": 0.0, "vad": 0.52, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_039_vad3_near1.wav"}, {"type": "result", "n": 40, "preset": "vad3", "role": "near1", "phrase": "", "dur": 6.48, "rms": 0.04854, "rms_db": -26.3, "peak": 0.423, "clip": 0.0, "vad": 0.28, "wake_a": 0.005, "stop_b": 0.003, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_040_vad3_near1.wav"}, {"type": "result", "n": 41, "preset": "vad3", "role": "near2", "phrase": "", "dur": 5.12, "rms": 0.03024, "rms_db": -30.4, "peak": 0.253, "clip": 0.0, "vad": 0.67, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_041_vad3_near2.wav"}, {"type": "result", "n": 42, "preset": "vad3", "role": "near3", "phrase": "", "dur": 4.72, "rms": 0.03222, "rms_db": -29.8, "peak": 0.253, "clip": 0.0, "vad": 0.33, "wake_a": 0.001, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 31.6, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_042_vad3_near3.wav"}, {"type": "result", "n": 43, "preset": "gain2vad3", "role": "user", "phrase": "네", "dur": 1.2, "rms": 0.0223, "rms_db": -33.0, "peak": 0.122, "clip": 0.0, "vad": 0.55, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_043_gain2vad3_user.wav"}, {"type": "result", "n": 44, "preset": "gain2vad3", "role": "user", "phrase": "아니", "dur": 1.2, "rms": 0.03325, "rms_db": -29.6, "peak": 0.249, "clip": 0.0, "vad": 0.7, "wake_a": 0.0, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_044_gain2vad3_user.wav"}, {"type": "result", "n": 45, "preset": "gain2vad3", "role": "user", "phrase": "멈춰", "dur": 1.36, "rms": 0.0613, "rms_db": -24.3, "peak": 0.626, "clip": 0.0, "vad": 0.67, "wake_a": 0.0, "stop_b": 0.752, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_045_gain2vad3_user.wav"}, {"type": "result", "n": 46, "preset": "gain2vad3", "role": "user", "phrase": "비카야", "dur": 1.2, "rms": 0.07147, "rms_db": -22.9, "peak": 0.322, "clip": 0.0, "vad": 0.73, "wake_a": 0.0, "stop_b": 0.0, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_046_gain2vad3_user.wav"}, {"type": "result", "n": 47, "preset": "gain2vad3", "role": "user", "phrase": "비카야 화장실 가자", "dur": 2.08, "rms": 0.04881, "rms_db": -26.2, "peak": 0.324, "clip": 0.0, "vad": 0.78, "wake_a": 0.026, "stop_b": 0.001, "kept_now": true, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_047_gain2vad3_user.wav"}, {"type": "result", "n": 48, "preset": "gain2vad3", "role": "near1", "phrase": "", "dur": 6.16, "rms": 0.00836, "rms_db": -41.6, "peak": 0.061, "clip": 0.0, "vad": 0.84, "wake_a": 0.0, "stop_b": 0.002, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_048_gain2vad3_near1.wav"}, {"type": "result", "n": 49, "preset": "gain2vad3", "role": "near1", "phrase": "", "dur": 5.92, "rms": 0.00895, "rms_db": -41.0, "peak": 0.061, "clip": 0.0, "vad": 0.85, "wake_a": 0.0, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_049_gain2vad3_near1.wav"}, {"type": "result", "n": 50, "preset": "gain2vad3", "role": "near2", "phrase": "", "dur": 5.84, "rms": 0.00572, "rms_db": -44.9, "peak": 0.043, "clip": 0.0, "vad": 0.75, "wake_a": 0.0, "stop_b": 0.002, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_050_gain2vad3_near2.wav"}, {"type": "result", "n": 51, "preset": "gain2vad3", "role": "near3", "phrase": "", "dur": 7.04, "rms": 0.00469, "rms_db": -46.6, "peak": 0.042, "clip": 0.0, "vad": 0.65, "wake_a": 0.001, "stop_b": 0.001, "kept_now": false, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 2.0, "GAMMAVAD_SR": 45.0}, "wav": "take_051_gain2vad3_near3.wav"}, {"type": "state", "preset": "gain2", "role": "near3", "phrase": "", "presets": [{"key": "base", "label": "지금 설정", "note": "⑫ 와 같음(.env 값 — 증폭 한도 줄이 없으면 ×31.6)"}, {"key": "gain8", "label": "증폭 최대 ×8", "note": "먼 소리를 덜 키운다"}, {"key": "gain2", "label": "증폭 최대 ×2", "note": "먼 소리를 거의 안 키운다"}, {"key": "agcoff", "label": "증폭 끔(고정 ×2)", "note": "거리 차이가 그대로 남는다"}, {"key": "vad3", "label": "말소리 감지 둔감 ×3", "note": "칩이 약한 목소리를 말로 덜 본다"}, {"key": "gain2vad3", "label": "증폭 ×2 + 감지 둔감 ×3", "note": "둘 다"}], "roles": [{"key": "user", "label": "사용자(손잡이)"}, {"key": "near1", "label": "옆사람 1 m"}, {"key": "near2", "label": "옆사람 2 m"}, {"key": "near3", "label": "옆사람 3 m"}], "listen_min_rms": 0.012, "chip": {"AGCONOFF": 1.0, "AGCMAXGAIN": 2.0, "AGCDESIREDLEVEL": 0.007, "AGCGAIN": 8.0, "GAMMAVAD_SR": 15.0}}, {"type": "summary", "presets": [{"key": "base", "label": "지금 설정", "user": {"n": 5, "min_db": -19.7, "med_db": -15.8}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 1, "max_db": -39.3, "med_db": -39.3}, "near2": {"label": "옆사람 2 m", "n": 1, "max_db": -34.8, "med_db": -34.8}, "near3": {"label": "옆사람 3 m", "n": 1, "max_db": -36.7, "med_db": -36.7}}, "margin_db": 15.1, "suggest_rms": 0.0433, "bystander_pass_now": "2/3", "user_drop_now": "0/5", "far_drop_now": "0/0", "wake": "2/2", "stop": "1/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}, {"key": "gain8", "label": "증폭 최대 ×8", "user": {"n": 4, "min_db": -20.1, "med_db": -17.1}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 1, "max_db": -38.4, "med_db": -38.4}, "near2": {"label": "옆사람 2 m", "n": 1, "max_db": -30.5, "med_db": -30.5}, "near3": {"label": "옆사람 3 m", "n": 1, "max_db": -44.3, "med_db": -44.3}}, "margin_db": 10.4, "suggest_rms": 0.0545, "bystander_pass_now": "2/3", "user_drop_now": "0/4", "far_drop_now": "0/0", "wake": "2/2", "stop": "1/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}, {"key": "gain2", "label": "증폭 최대 ×2", "user": {"n": 5, "min_db": -29.8, "med_db": -26.2}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 1, "max_db": -45.2, "med_db": -45.2}, "near2": {"label": "옆사람 2 m", "n": 2, "max_db": -46.7, "med_db": -46.8}, "near3": {"label": "옆사람 3 m", "n": 1, "max_db": -47.7, "med_db": -47.7}}, "margin_db": 15.4, "suggest_rms": 0.0134, "bystander_pass_now": "0/4", "user_drop_now": "0/5", "far_drop_now": "0/0", "wake": "2/2", "stop": "1/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}, {"key": "agcoff", "label": "증폭 끔(고정 ×2)", "user": {"n": 5, "min_db": -29.4, "med_db": -24.8}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 1, "max_db": -44.1, "med_db": -44.1}, "near2": {"label": "옆사람 2 m", "n": 1, "max_db": -46.6, "med_db": -46.6}, "near3": {"label": "옆사람 3 m", "n": 2, "max_db": -31.2, "med_db": -35.7}}, "margin_db": 1.8, "suggest_rms": 0.0306, "bystander_pass_now": "1/4", "user_drop_now": "0/5", "far_drop_now": "0/0", "wake": "1/2", "stop": "1/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}, {"key": "vad3", "label": "말소리 감지 둔감 ×3", "user": {"n": 5, "min_db": -31.6, "med_db": -26.0}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 2, "max_db": -26.3, "med_db": -29.8}, "near2": {"label": "옆사람 2 m", "n": 1, "max_db": -30.4, "med_db": -30.4}, "near3": {"label": "옆사람 3 m", "n": 1, "max_db": -29.8, "med_db": -29.8}}, "margin_db": -5.4, "suggest_rms": null, "bystander_pass_now": "4/4", "user_drop_now": "0/5", "far_drop_now": "0/0", "wake": "1/2", "stop": "0/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}, {"key": "gain2vad3", "label": "증폭 ×2 + 감지 둔감 ×3", "user": {"n": 5, "min_db": -33.0, "med_db": -26.2}, "far": {"n": 0, "min_db": null, "med_db": null}, "by_dist": {"near1": {"label": "옆사람 1 m", "n": 2, "max_db": -41.0, "med_db": -41.3}, "near2": {"label": "옆사람 2 m", "n": 1, "max_db": -44.9, "med_db": -44.9}, "near3": {"label": "옆사람 3 m", "n": 1, "max_db": -46.6, "med_db": -46.6}}, "margin_db": 7.9, "suggest_rms": 0.0141, "bystander_pass_now": "0/4", "user_drop_now": "0/5", "far_drop_now": "0/0", "wake": "0/2", "stop": "1/1", "far_stop": "0/0", "wake_cont": "0/0", "shout2": "0/0", "shout2_low": "0/0"}], "listen_min_rms": 0.012}];
+  REPLAY.forEach(onMessage);
+})();
+</script>
+</body>
+</html>

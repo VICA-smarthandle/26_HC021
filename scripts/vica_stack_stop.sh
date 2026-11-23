@@ -13,6 +13,12 @@ send() {
   [ $# -gt 0 ] && kill "-$sig" "$@" 2>/dev/null || true
 }
 
+units=$(systemctl --user list-units --plain --no-legend 'vica-*' 2>/dev/null | awk '{print $1}')
+if [ -n "$units" ]; then
+  echo "[0/4] 자동 기동 유닛 정지 ($(echo $units | wc -w)개)"
+  systemctl --user stop vica-drive.target vica-base.target $units 2>/dev/null || true
+fi
+
 echo "[1/4] 생존 프로세스 확인"
 alive="$(survivors)"
 if [ -z "$alive" ]; then
@@ -44,6 +50,7 @@ left="$(survivors)"
 if [ -z "$left" ]; then
   echo "정리 완료 — 0개. 터미네이터를 새로 띄워도 된다."
   echo "재기동 주의: ① can1 은 precheck 에 state UP 이면 건너뛴다."
+  [ -n "$units" ] && echo "자동 기동은 다음 부팅에 다시 뜬다. 끄려면: systemctl --user disable vica-base.target"
 else
   echo "안 죽는 프로세스가 남았다. 확인 후 최후수단으로 kill -9 <PID>:"
   echo "$left" | sed 's/^/  /'

@@ -1,0 +1,301 @@
+{
+ "presets": [
+  {
+   "key": "base",
+   "label": "지금 설정",
+   "user": {
+    "n": 11,
+    "min_db": -22.7,
+    "med_db": -17.7
+   },
+   "far": {
+    "n": 15,
+    "min_db": -27.3,
+    "med_db": -20.8
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 2,
+     "max_db": -23.8,
+     "med_db": -28.4
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 2,
+     "max_db": -34.8,
+     "med_db": -35.3
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 2,
+     "max_db": -27.5,
+     "med_db": -31.0
+    }
+   },
+   "margin_db": -3.5,
+   "suggest_rms": null,
+   "bystander_pass_now": "5/6",
+   "user_drop_now": "0/11",
+   "far_drop_now": "0/15",
+   "wake": "2/2",
+   "stop": "1/1",
+   "far_stop": "8/11",
+   "wake_cont": "3/5",
+   "shout2": "5/8",
+   "shout2_low": "6/8"
+  },
+  {
+   "key": "gain8",
+   "label": "증폭 최대 ×8",
+   "user": {
+    "n": 4,
+    "min_db": -20.1,
+    "med_db": -17.1
+   },
+   "far": {
+    "n": 0,
+    "min_db": null,
+    "med_db": null
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 1,
+     "max_db": -38.4,
+     "med_db": -38.4
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 1,
+     "max_db": -30.5,
+     "med_db": -30.5
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 1,
+     "max_db": -44.3,
+     "med_db": -44.3
+    }
+   },
+   "margin_db": 10.4,
+   "suggest_rms": 0.0545,
+   "bystander_pass_now": "2/3",
+   "user_drop_now": "0/4",
+   "far_drop_now": "0/0",
+   "wake": "2/2",
+   "stop": "1/1",
+   "far_stop": "0/0",
+   "wake_cont": "0/0",
+   "shout2": "0/0",
+   "shout2_low": "0/0"
+  },
+  {
+   "key": "gain4",
+   "label": "증폭 최대 ×4",
+   "user": {
+    "n": 5,
+    "min_db": -22.4,
+    "med_db": -21.2
+   },
+   "far": {
+    "n": 0,
+    "min_db": null,
+    "med_db": null
+   },
+   "by_dist": {},
+   "margin_db": null,
+   "suggest_rms": null,
+   "bystander_pass_now": "0/0",
+   "user_drop_now": "0/5",
+   "far_drop_now": "0/0",
+   "wake": "0/0",
+   "stop": "0/0",
+   "far_stop": "4/4",
+   "wake_cont": "3/5",
+   "shout2": "4/4",
+   "shout2_low": "4/4"
+  },
+  {
+   "key": "gain2",
+   "label": "증폭 최대 ×2",
+   "user": {
+    "n": 13,
+    "min_db": -31.7,
+    "med_db": -25.6
+   },
+   "far": {
+    "n": 21,
+    "min_db": -48.5,
+    "med_db": -35.2
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 3,
+     "max_db": -40.6,
+     "med_db": -45.2
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 4,
+     "max_db": -41.6,
+     "med_db": -46.0
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 3,
+     "max_db": -35.1,
+     "med_db": -47.7
+    }
+   },
+   "margin_db": -13.4,
+   "suggest_rms": null,
+   "bystander_pass_now": "1/10",
+   "user_drop_now": "0/13",
+   "far_drop_now": "1/21",
+   "wake": "4/6",
+   "stop": "3/3",
+   "far_stop": "3/6",
+   "wake_cont": "0/0",
+   "shout2": "2/3",
+   "shout2_low": "3/3"
+  },
+  {
+   "key": "agcoff",
+   "label": "증폭 끔(고정 ×2)",
+   "user": {
+    "n": 10,
+    "min_db": -29.4,
+    "med_db": -25.0
+   },
+   "far": {
+    "n": 0,
+    "min_db": null,
+    "med_db": null
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 1,
+     "max_db": -44.1,
+     "med_db": -44.1
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 1,
+     "max_db": -46.6,
+     "med_db": -46.6
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 2,
+     "max_db": -31.2,
+     "med_db": -35.7
+    }
+   },
+   "margin_db": 1.8,
+   "suggest_rms": 0.0306,
+   "bystander_pass_now": "1/4",
+   "user_drop_now": "0/10",
+   "far_drop_now": "0/0",
+   "wake": "2/2",
+   "stop": "1/1",
+   "far_stop": "3/5",
+   "wake_cont": "3/5",
+   "shout2": "3/5",
+   "shout2_low": "3/5"
+  },
+  {
+   "key": "vad3",
+   "label": "말소리 감지 둔감 ×3",
+   "user": {
+    "n": 5,
+    "min_db": -31.6,
+    "med_db": -26.0
+   },
+   "far": {
+    "n": 0,
+    "min_db": null,
+    "med_db": null
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 2,
+     "max_db": -26.3,
+     "med_db": -29.8
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 1,
+     "max_db": -30.4,
+     "med_db": -30.4
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 1,
+     "max_db": -29.8,
+     "med_db": -29.8
+    }
+   },
+   "margin_db": -5.4,
+   "suggest_rms": null,
+   "bystander_pass_now": "4/4",
+   "user_drop_now": "0/5",
+   "far_drop_now": "0/0",
+   "wake": "1/2",
+   "stop": "1/1",
+   "far_stop": "0/0",
+   "wake_cont": "0/0",
+   "shout2": "0/0",
+   "shout2_low": "0/0"
+  },
+  {
+   "key": "gain2vad3",
+   "label": "증폭 ×2 + 감지 둔감 ×3",
+   "user": {
+    "n": 5,
+    "min_db": -33.0,
+    "med_db": -26.2
+   },
+   "far": {
+    "n": 0,
+    "min_db": null,
+    "med_db": null
+   },
+   "by_dist": {
+    "near1": {
+     "label": "옆사람 1 m",
+     "n": 2,
+     "max_db": -41.0,
+     "med_db": -41.3
+    },
+    "near2": {
+     "label": "옆사람 2 m",
+     "n": 1,
+     "max_db": -44.9,
+     "med_db": -44.9
+    },
+    "near3": {
+     "label": "옆사람 3 m",
+     "n": 1,
+     "max_db": -46.6,
+     "med_db": -46.6
+    }
+   },
+   "margin_db": 7.9,
+   "suggest_rms": 0.0141,
+   "bystander_pass_now": "0/4",
+   "user_drop_now": "0/5",
+   "far_drop_now": "0/0",
+   "wake": "1/2",
+   "stop": "1/1",
+   "far_stop": "0/0",
+   "wake_cont": "0/0",
+   "shout2": "0/0",
+   "shout2_low": "0/0"
+  }
+ ],
+ "listen_min_rms": 0.012
+}
