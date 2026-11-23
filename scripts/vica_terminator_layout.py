@@ -104,7 +104,7 @@ AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
 HELPER_SCRIPTS = (
     "vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh",
     "vica_mode_node.py", "mode_logic.py", "fastdds_udp_only.xml", "fastdds_super_client.xml",
-    "nav2_bond.launch.py",
+    "nav2_bond.launch.py", "vica_ollama_preload.sh", "vica_shutdown.sh",
 )
 # --discovery-server(2026-11-16 시험): 노드가 서로를 직접 찾지 않고 이 서버를 거친다.
 DISCOVERY_SERVER = "127.0.0.1:11811"
@@ -253,14 +253,26 @@ VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && ech
 # 없으면 오프라인 믿음. ⑬ 줄은 10-24 손 수정본 t_llm_local.rc 와 같다(Ollama 자동 켜기·로컬 규칙).
 # 중복 검사는 유닛 guard_cmdline 이 한다 — VOICE_DUP_CHECK 를 붙이지 않는다.
 VOICE_MODE_FILE = "$HOME/.config/vica-terminator/voice_mode"
+# ⑬ 의 Ollama 는 vica_voice.launch.py 의 ollama_serve 와 같은 설정으로 켠다(2026-11-17). 설정 없이
+# 먼저 켜면 launch 쪽은 '주소 사용 중' 으로 죽고 OLLAMA_KEEP_ALIVE(모델이 5분 뒤 내려감)·
+# OLLAMA_GO_TEMPLATE(midm2-mini 가 목적지 목록을 놓침, 09-28 실측)이 빠진다.
+OLLAMA_SERVE_ENV = (
+    "OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_GO_TEMPLATE=1"
+)
 VOICE_UNIT_COMMAND = (
     f'VICA_VOICE_MODE=$(cat "{VOICE_MODE_FILE}" 2>/dev/null || echo offline); '
     "printf '음성: %s\\n' \"$VICA_VOICE_MODE\"; "
     'if [ "$VICA_VOICE_MODE" = online ]; then '
     "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; "
     "else "
-    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\";"
-    " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & sleep 3; };"
+    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\"; "
+    + OLLAMA_SERVE_ENV
+    + " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & };"
+    # 음성 노드의 첫 호출(시한 15 s)보다 먼저 모델을 올린다 — 11-17 로컬 기동 8번 모두 첫 호출이
+    # 적재 중에 끊겨 Ollama 가 적재를 그만뒀다. 포트가 열릴 때까지도 이 스크립트가 기다린다.
+    # 출력은 실행 스크립트 본체가 찍는다 — 금방 끝나는 자식이 찍은 줄은 저널이 유닛에 묶지 못해
+    # `journalctl -u vica-llm`(모드 노드 음성 알림)에서 빠진다(11-17 실측: '올림' 줄이 유닛 밖으로).
+    ' echo "$("$VICA_BIN/vica_ollama_preload.sh" midm2-mini)";'
     " VICA_LOCAL_RULES=1 VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama"
     " OLLAMA_HOST=http://localhost:11434 VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY="
     " VICA_LLM_FALLBACK_MODEL= ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; }; "
@@ -669,13 +681,13 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             uses_map=True,
-            # 칸과 같은 명령으로 띄운다. map_yaml 을 빼면 자동 감지가 될 것 같지만, 이 launch 는
-            # 빈 값을 `-p map_yaml:=` 로 넘기고 rcl 이 해석하지 못해 vica_status_app_node 가
-            # 죽는다(2026-11-14 실기 — launch 는 살아 있어 유닛은 active 로 보였다).
-            # 그래서 부팅 때 지도가 고정된다. 지도를 새로 그린 뒤에는 이 유닛을 다시 띄워야
-            # /robot_status 의 map_id 가 바뀐다.
+            # 유닛은 map_yaml 없이 띄운다 — 상태 노드가 map_server 의 yaml_filename 을 계속 읽어
+            # 앱에서 주행 지도를 바꾸면 /robot_status 의 map_id 도 따라간다(11-17). 11-14 에는 빈 값이
+            # `-p map_yaml:=` 로 넘어가 상태 노드가 죽어서 칸 명령(부팅 지도 고정)을 썼는데, 그 수리
+            # (앱 9ab04ac = 운영 c9286ea)가 운영 브랜치에 들어왔다. 칸은 예전 명령 그대로다.
             unit=Unit(
                 stage="1a",
+                command=f"ros2 launch {SUPERVISOR}/ros2/supervisor_bringup.launch.py",
                 guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
                 super_client=True,
                 # UDP 전용: 앱의 비상정지·모드 전환이 여기를 거쳐 멈추면 안 되고, 다루는 데이터가 작다
@@ -1409,6 +1421,12 @@ fi
 printf '\\n'
 """
 
+# 유닛 실행 스크립트에만 붙인다(rc 는 그대로). 모드 노드가 이번 기동이 읽은 지도를 저널에서 찾는다 —
+# 터미널에서 CURRENT_MAP 만 바꿔 Nav2 와 지도가 어긋난 것을 알리고, 지도를 바꿀 때 다시 띄울지 가린다(11-17).
+UNIT_MAP_MARK = """\
+printf '[vica-map] %s\\n' "$VICA_MAP_ID"
+"""
+
 GUARD_BLOCK = """\
 vica_guard {names} || return 2>/dev/null || exit 0
 """
@@ -1419,7 +1437,7 @@ printf '\\033[0;32m실행:\\033[0m %s\\n\\n' {command_q}
 """
 
 HOLD_BLOCK = """\
-history -s {command_q}
+history -s {history_q}
 printf '\\033[0;33m대기 중\\033[0m — 위 화살표(↑) 한 번 + Enter 로 실행합니다:\\n'
 printf '  %s\\n\\n' {command_q}
 """
@@ -1506,7 +1524,15 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
     elif term.mode == SHELL:
         run_block = SHELL_BLOCK
     else:
-        run_block = HOLD_BLOCK.format(command_q=shell_quote(term.command))
+        # 대기 칸은 ↑+Enter 순간에도 같은 검사를 한다(2026-11-17). 칸을 열 때의 검사만으로는
+        # 칸을 열어 둔 뒤 앱으로 주행을 켜고 ↑+Enter 를 누르면 두 벌이 떴다. 명령을 { } 로 묶어
+        # 명령 안의 `a && b || c` 가 guard 거부 뒤에 돌지 않게 한다. 화면에는 명령만 보인다.
+        history = term.command
+        if term.guard:
+            history = f"vica_guard {names} && {{ {term.command}; }}"
+        run_block = HOLD_BLOCK.format(
+            history_q=shell_quote(history), command_q=shell_quote(term.command)
+        )
 
     return RC_TEMPLATE.format(
         helper_block=HELPER_BLOCK,
@@ -1649,7 +1675,7 @@ def render_run_script(
         ros_block=ros_block,
         overlay_block=overlay_block,
         cd_block=cd_block,
-        map_block=MAP_BLOCK if term.uses_map else "",
+        map_block=MAP_BLOCK + UNIT_MAP_MARK if term.uses_map else "",
         guard_block=guard_block,
         nice_block=NICE_BLOCK.format(nice=unit.nice) if unit.nice is not None else "",
         command_q=shell_quote(command),

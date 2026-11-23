@@ -87,6 +87,68 @@ def idle_snapshot(**overrides):
     return snapshot(units=units, procs=procs, **overrides)
 
 
+class VoiceNodeRefusalTest(unittest.TestCase):
+    """음성 노드(vica-llm) 켜기·끄기 거절 규칙(11-19 설계)."""
+
+    def _with_check(self, state):
+        units = dict(snapshot().units)
+        units[ml.MIC_CHECK_UNIT] = (state, "stop-sigterm", "")
+        return snapshot(units=units)
+
+    def test_idle_driving_allows(self):
+        self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=False))
+        self.assertIsNone(ml.voice_node_refusal(snapshot(), MANIFEST, on=True))
+
+    def test_turning_off_within_a_minute_of_start_is_refused(self):
+        # 11-20 실기: 켜고 2 s 만에 끄자 모델을 올리던 노드가 종료 신호를 무시해 20 s 뒤 강제 종료 → failed.
+        young = snapshot(unit_age={"vica-llm.service": 18.2})
+        self.assertEqual(ml.voice_node_refusal(young, MANIFEST, on=False),
+                         "음성 노드가 켜지는 중입니다. 42초 뒤 다시 누르세요.")
+        self.assertIsNone(ml.voice_node_refusal(young, MANIFEST, on=True))
+        old = snapshot(unit_age={"vica-llm.service": ml.VOICE_OFF_GRACE_SEC})
+        self.assertIsNone(ml.voice_node_refusal(old, MANIFEST, on=False))
+        # 나이를 모르면(기동 시각을 못 읽음) 막지 않는다.
+        self.assertIsNone(ml.voice_node_refusal(snapshot(unit_age={}), MANIFEST, on=False))
+
+    def test_moving_refusal_comes_before_starting_refusal(self):
+        young_moving = snapshot(unit_age={"vica-llm.service": 5.0}, robot_moving=True)
+        self.assertEqual(ml.voice_node_refusal(young_moving, MANIFEST, on=False), ml.MOVING_REFUSAL)
+
+    def test_refuses_when_robot_state_moving(self):
+        for on in (False, True):
+            self.assertEqual(ml.voice_node_refusal(snapshot(robot_moving=True), MANIFEST, on=on),
+                             ml.MOVING_REFUSAL)
+
+    def test_refuses_when_only_cmd_vel_safe_moving(self):
+        # 사람 접근·수동 주행·도킹은 robot_state.is_moving 이 거짓이다.
+        snap = snapshot(robot_moving=False, cmd_moving=True)
+        self.assertTrue(ml.robot_in_motion(snap))
+        self.assertEqual(ml.voice_node_refusal(snap, MANIFEST, on=False), ml.MOVING_REFUSAL)
+
+    def test_refuses_outside_drive_mode(self):
+        self.assertEqual(ml.voice_node_refusal(idle_snapshot(), MANIFEST, on=True), "주행 모드가 아닙니다.")
+
+    def test_refuses_without_voice_unit(self):
+        manifest = {k: v for k, v in MANIFEST.items() if k != "llm"}
+        self.assertEqual(ml.voice_node_refusal(snapshot(), manifest, on=True), "음성 유닛이 없습니다.")
+
+    def test_mic_check_deactivating_blocks_turning_on_only(self):
+        snap = self._with_check("deactivating")
+        self.assertTrue(ml.mic_check_active(snap))
+        self.assertEqual(ml.voice_node_refusal(snap, MANIFEST, on=True),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+        self.assertIsNone(ml.voice_node_refusal(snap, MANIFEST, on=False))
+
+    def test_mic_check_inactive_is_not_active(self):
+        self.assertFalse(ml.mic_check_active(snapshot()))
+        self.assertFalse(ml.mic_check_active(self._with_check("failed")))
+
+    def test_twist_moving_threshold(self):
+        self.assertFalse(ml.twist_moving(0.0, 0.0))
+        self.assertFalse(ml.twist_moving(0.0005, 0.0))
+        self.assertTrue(ml.twist_moving(0.0, -0.2))
+
+
 class ParseShow(unittest.TestCase):
     def test_reads_when_each_unit_became_active(self):
         text = SHOW.replace("InvocationID=2a7bbeb2412d40988548348501265d46",
@@ -152,6 +214,32 @@ class Nav2Phase(unittest.TestCase):
         # 초기 위치는 사람이 잡는다. 몇 분이 걸려도 멈춘 것이 아니다.
         self.assertEqual(ml.nav2_phase([self.POSE], age_sec=600), "waiting_pose")
         self.assertEqual(ml.nav2_phase([self.ABORT], age_sec=600), "aborted")
+
+    # 11-17 21:33 사고: 주행 중 flutter 빌드로 저널이 약 10 s 멈춰 저널 조회(5 s 시한)가 실패했다.
+    # 빈 목록으로 판정해 23분째 초기 위치를 기다리던 Nav2 를 '멈춤'으로 보고 자동 재시도로 껐다 켰다.
+    def test_failed_read_keeps_the_previous_phase(self):
+        late = ml.NAV2_STALL_SEC * 15
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", None, late), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("active", None, late), "active")
+        self.assertEqual(ml.settle_nav2_phase("starting", None, late), "starting")
+
+    def test_failed_read_without_a_previous_phase_is_starting(self):
+        self.assertEqual(ml.settle_nav2_phase(None, None, ml.NAV2_STALL_SEC * 15), "starting")
+
+    def test_progress_seen_never_falls_back_to_stalled(self):
+        # 저널이 지워지거나 일부만 읽혀 '초기 위치' 줄이 없어도 이미 본 진행은 그대로다.
+        late = ml.NAV2_STALL_SEC * 15
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [], late), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("active", [], late), "active")
+
+    def test_a_real_abort_still_wins(self):
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [self.POSE, self.ABORT], 600), "aborted")
+
+    def test_settled_phase_matches_a_fresh_read_otherwise(self):
+        self.assertEqual(ml.settle_nav2_phase(None, [], ml.NAV2_STALL_SEC), "stalled")
+        self.assertEqual(ml.settle_nav2_phase("starting", [], ml.NAV2_STALL_SEC), "stalled")
+        self.assertEqual(ml.settle_nav2_phase("starting", [self.POSE], 30), "waiting_pose")
+        self.assertEqual(ml.settle_nav2_phase("waiting_pose", [self.POSE, self.ACTIVE], 30), "active")
 
     def test_other_lifecycle_managers_do_not_count(self):
         # collision_monitor 관리자는 12초 재시도 때 늘 'Failed to bring up' 을 남긴다.
@@ -285,6 +373,47 @@ class StopRefusal(unittest.TestCase):
     def test_unknown_motion_is_allowed(self):
         # 미션이 죽어 있으면 움직임을 모른다. 그래도 내릴 수 있어야 한다 — Nav2 를 내리면 멈춘다.
         self.assertIsNone(ml.drive_stop_refusal(snapshot(robot_moving=None)))
+
+
+class PaneNodes(unittest.TestCase):
+    """유닛 밖(칸·터미널)에서 뜬 주행 노드(사용자 11-18 B안). 앱은 노드 목록(/rosapi/nodes) 대신 이것을 본다 —
+    강제 종료된 노드가 그 목록에 20 s 남아 주행을 끈 뒤 카드가 30 s 늦게 바뀌었다."""
+
+    def test_none_while_units_run_them(self):
+        self.assertEqual(ml.derive_status(snapshot(), MANIFEST)["pane_nodes"], [])
+
+    def test_none_when_everything_is_off(self):
+        self.assertEqual(ml.derive_status(idle_snapshot(), MANIFEST)["pane_nodes"], [])
+
+    def test_nav2_from_a_terminal_is_listed(self):
+        snap = idle_snapshot(procs={"bt_navigator": 1, "amcl": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], ["amcl", "bt_navigator"])
+
+    def test_names_shared_with_mapping_are_left_out(self):
+        # 지도 그리기도 ekf_node·encoder_feedback·cartographer 를 띄운다. 그것만으로 '칸 Nav2' 가 아니다.
+        snap = idle_snapshot(procs={"ekf_node": 1, "encoder_feedbac": 1, "cartographer_no": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], [])
+
+    def test_units_still_stopping_are_not_counted(self):
+        # 묶음을 내리는 동안은 유닛이 deactivating 이고 프로세스가 아직 있다 — 칸에서 띄운 것이 아니다.
+        snap = idle_snapshot(units={"vica-nav2.service": ("deactivating", "stop-sigterm", "")},
+                             procs={"bt_navigator": 1})
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["pane_nodes"], [])
+
+
+class ShutdownRefusal(unittest.TestCase):
+    """앱 '로봇 끄기'(사용자 11-18): 움직이는 중·지도 그리기 중이면 거절한다."""
+
+    def test_refused_while_moving(self):
+        self.assertIsNotNone(ml.shutdown_refusal(snapshot(robot_moving=True)))
+
+    def test_refused_while_mapping(self):
+        # 저장 안 한 지도를 잃는다.
+        self.assertIn("지도 그리기", ml.shutdown_refusal(snapshot(mapping_state="mapping")))
+
+    def test_allowed_when_still_and_idle(self):
+        self.assertIsNone(ml.shutdown_refusal(snapshot()))
+        self.assertIsNone(ml.shutdown_refusal(snapshot(robot_moving=None)))
 
 
 class CommandLineCandidates(unittest.TestCase):
@@ -547,6 +676,22 @@ class VoiceEvents(unittest.TestCase):
         self.assertEqual(self.run_lines(["음성: online", line]), ["external_fail"])
         self.assertEqual(self.run_lines(["음성: offline", line]), ["local_fail"])
 
+    def test_preload_failure_is_a_local_failure(self):
+        # 실행 스크립트가 음성 노드보다 먼저 모델을 올린다(vica_ollama_preload.sh, 11-17).
+        self.assertEqual(self.run_lines([
+            "음성: offline",
+            "[Ollama] 꺼져 있어 켭니다",
+            "[Ollama] midm2-mini 올리기 실패 (180 s) — 첫 질문이 늦거나 실패할 수 있습니다",
+            "... LLM 워밍업 완료 (15.1초)",
+        ]), ["local_fail"])
+
+    def test_preloaded_model_then_warmup_is_a_local_success(self):
+        self.assertEqual(self.run_lines([
+            "음성: offline",
+            "[Ollama] midm2-mini 올림 (47 s)",
+            "... LLM 워밍업 완료 (2.1초)",
+        ]), ["local_ok"])
+
     def test_both_failing(self):
         self.assertEqual(self.run_lines(["음성: online", "[LLM] 호출 실패(로컬까지): refused"]), ["both_fail"])
 
@@ -577,3 +722,293 @@ class VoiceEvents(unittest.TestCase):
 
     def test_unrelated_lines_are_ignored(self):
         self.assertEqual(self.run_lines(["음성: online", "[vica_tts-2] 고정 문장 워밍업 완료: 39건"]), [])
+
+
+MAP_MANIFEST = dict(MANIFEST, posecheck={"unit": "vica-posecheck.service", "bundle": "drive",
+                                         "guard": ["pose_bootstrap"], "guard_cmdline": ""})
+
+
+def map_snapshot(**overrides):
+    """주행이 떠 있고 멈춰 대기 중. nav2·mission·llm·posecheck 가 4층 복도 지도로 떠 있다."""
+    units = {"vica-llm.service": ("active", "running", "success"),
+             "vica-posecheck.service": ("active", "running", "success")}
+    units.update(overrides.pop("units", {}))
+    hits = {"^[^ ]*python3 [^ ]*ros2 launch launch/vica_voice\\.launch\\.py": 1}
+    hits.update(overrides.pop("cmdline_hits", {}))
+    procs = {"pose_bootstrap": 1}
+    procs.update(overrides.pop("procs", {}))
+    overrides.setdefault("dialog_state", "idle")
+    overrides.setdefault("current_map", "map_1116_203022")
+    overrides.setdefault("running_maps", {"nav2": "map_1116_203022", "mission": "map_1116_203022",
+                                          "llm": "map_1116_203022"})
+    return snapshot(units=units, cmdline_hits=hits, procs=procs, **overrides)
+
+
+class MapChange(unittest.TestCase):
+    """주행 지도 바꾸기(사용자 11-17): 멈춰 대기 중이거나 일시정지 중일 때만, 지도를 쥔 유닛만 다시 띄운다."""
+
+    def refusal(self, snap, map_id="map_1103_142858", problem=None):
+        state = ml.derive_status(snap, MAP_MANIFEST)["state"]
+        return ml.map_change_refusal(snap, MAP_MANIFEST, state, map_id, problem)
+
+    def test_waiting_or_paused_robot_may_change(self):
+        for dialog in ("idle", "arrived", "failed", "paused", "paused_handle", "patrol_paused"):
+            self.assertIsNone(self.refusal(map_snapshot(dialog_state=dialog)), dialog)
+
+    def test_busy_robot_may_not_change_and_says_why(self):
+        cases = {"navigating": "안내 중", "approaching": "사람 접근 중", "patrolling": "순찰 중",
+                 "estopped": "비상정지 중", "grip_wait": "손잡이 잡기 대기 중", "waiting": "도착 뒤"}
+        for dialog, word in cases.items():
+            reason = self.refusal(map_snapshot(dialog_state=dialog))
+            self.assertIn(word, reason or "", dialog)
+
+    def test_moving_or_unknown_robot_may_not_change(self):
+        self.assertIn("움직이는", self.refusal(map_snapshot(robot_moving=True)))
+        self.assertIn("받지 못함", self.refusal(map_snapshot(dialog_state=None)))
+        self.assertIn("받지 못함", self.refusal(map_snapshot(robot_moving=None)))
+
+    def test_not_while_drive_is_starting_or_stopping(self):
+        self.assertIn("켜거나 끄는", self.refusal(map_snapshot(nav2_phase="starting")))
+        self.assertIn("켜거나 끄는", self.refusal(map_snapshot(stop_pending_sec=3.0)))
+
+    def test_not_while_drawing_a_map(self):
+        snap = idle_snapshot(mapping_state="mapping", dialog_state=None, robot_moving=None)
+        self.assertIn("지도 그리는", self.refusal(snap))
+
+    def test_drive_off_needs_no_robot_state(self):
+        # 주행이 꺼져 있으면 미션도 없다. 파일만 바꾸고 다음에 켤 때 읽는다.
+        snap = idle_snapshot(dialog_state=None, robot_moving=None)
+        self.assertIsNone(self.refusal(snap))
+        self.assertEqual(ml.map_restart_units(snap, MAP_MANIFEST, "map_1103_142858"), [])
+
+    def test_bad_name_or_missing_files_are_refused(self):
+        self.assertIn("올바르지", self.refusal(map_snapshot(), "../etc"))
+        self.assertIn("올바르지", self.refusal(map_snapshot(), ""))
+        self.assertEqual(self.refusal(map_snapshot(), problem="지도 파일 없음"), "지도 파일 없음")
+        # 금지구역 마스크는 yaml·pgm 짝이 있어 파일 검사만으로는 지도처럼 보인다.
+        self.assertIn("주행 지도가 아님", self.refusal(map_snapshot(), "map_1116_203022_keepout"))
+
+    def test_restarts_every_unit_that_holds_the_map(self):
+        units = ml.map_restart_units(map_snapshot(), MAP_MANIFEST, "map_1103_142858")
+        self.assertEqual(units, ["vica-nav2.service", "vica-mission.service", "vica-llm.service",
+                                 "vica-posecheck.service"])
+
+    def test_handle_detector_and_safety_are_left_alone(self):
+        manifest = dict(MAP_MANIFEST, handle={"unit": "vica-handle.service", "bundle": "drive",
+                                              "guard": [], "guard_cmdline": ""})
+        snap = map_snapshot(units={"vica-handle.service": ("active", "running", "success"),
+                                   "vica-detector.service": ("active", "running", "success")})
+        units = ml.map_restart_units(snap, manifest, "map_1103_142858")
+        self.assertNotIn("vica-handle.service", units)
+        self.assertNotIn("vica-detector.service", units)
+        self.assertNotIn("vica-motor.service", units)
+
+    def test_nothing_to_restart_when_units_already_run_that_map(self):
+        # ⑦ '되돌리기' — 파일만 유닛이 쓰는 지도로 되돌린다.
+        snap = map_snapshot(current_map="map_1029_074730")
+        self.assertEqual(ml.map_restart_units(snap, MAP_MANIFEST, "map_1116_203022"), [])
+
+    def test_unknown_running_map_restarts(self):
+        snap = map_snapshot(running_maps={})
+        self.assertEqual(len(ml.map_restart_units(snap, MAP_MANIFEST, "map_1116_203022")), 4)
+
+    def test_status_carries_map_fields(self):
+        status = ml.derive_status(map_snapshot(), MAP_MANIFEST)
+        self.assertEqual(status["current_map_id"], "map_1116_203022")
+        self.assertEqual(status["running_maps"]["nav2"], "map_1116_203022")
+        self.assertFalse(status["map_mismatch"])
+        self.assertEqual(status["map_change_block"], "")
+        busy = ml.derive_status(map_snapshot(dialog_state="navigating"), MAP_MANIFEST)
+        self.assertIn("안내 중", busy["map_change_block"])
+        self.assertEqual(busy["dialog_state"], "navigating")
+
+    def test_file_changed_behind_the_drive_is_a_mismatch(self):
+        # ⑦ 터미널에서 CURRENT_MAP 만 바꿨다. Nav2 는 옛 지도로 떠 있다.
+        status = ml.derive_status(map_snapshot(current_map="map_1029_074730"), MAP_MANIFEST)
+        self.assertTrue(status["map_mismatch"])
+        idle = ml.derive_status(idle_snapshot(current_map="map_1029_074730",
+                                              running_maps={"nav2": "map_1116_203022"}), MAP_MANIFEST)
+        self.assertFalse(idle["map_mismatch"])
+
+    def test_reads_the_map_mark_from_the_journal(self):
+        lines = ["\x1b[0;36m현재 지도\x1b[0m 4층 복도 (map_1116_203022 · maps/CURRENT_MAP)",
+                 "[vica-map] map_1116_203022", "실행: ros2 launch …"]
+        self.assertEqual(ml.parse_map_mark(lines), "map_1116_203022")
+        self.assertEqual(ml.parse_map_mark(["현재 지도 x"]), "")
+
+
+class BridgeWatchTest(unittest.TestCase):
+    """rosbridge 감시(11-17). 처리 스레드가 죽어 소켓만 살아 있던 일을 다시 띄워 살린다."""
+
+    def run_silent(self, w, start, secs, pub_every=2.0):
+        t = start
+        while t < start + secs:
+            w.published(t)
+            t += pub_every
+        return start + secs
+
+    def test_flowing_bridge_is_ok(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        for t in range(0, 60, 2):
+            w.published(float(t))
+            w.received(float(t) + 0.1)
+        self.assertEqual(w.verdict(60.0, moving=False), "ok")
+
+    def test_silent_bridge_while_we_publish_is_restarted(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 16.0)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_not_judged_before_the_silent_window(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 14.0)
+        self.assertEqual(w.verdict(now, moving=False), "wait")
+
+    def test_bridge_that_stopped_after_working_is_restarted(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        w.received(5.0)
+        now = self.run_silent(w, 5.0, 16.0)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_our_own_silence_is_not_blamed_on_the_bridge(self):
+        # 모드 노드 자신이 발행을 못 했으면(실행기가 멈춤) rosbridge 를 다시 띄우지 않는다.
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        w.published(1.0)
+        self.assertNotEqual(w.verdict(30.0, moving=False), "restart")
+
+    def test_held_while_moving_then_restarted_when_stopped(self):
+        w = ml.BridgeWatch()
+        w.connected(0.0)
+        now = self.run_silent(w, 0.0, 20.0)
+        self.assertEqual(w.verdict(now, moving=True), "hold")
+        self.assertIn("움직이는", w.hold_reason)
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_grace_and_cooldown_after_restart(self):
+        w = ml.BridgeWatch()
+        w.restarted(100.0)
+        w.connected(120.0)
+        now = self.run_silent(w, 120.0, 30.0)                      # 150 s: 재시작 뒤 50 s
+        self.assertEqual(w.verdict(now, moving=False), "wait")
+        w.connected(170.0)
+        now = self.run_silent(w, 170.0, 20.0)                      # 190 s: 쉬는 시간 지남, 간격 300 s 안
+        self.assertEqual(w.verdict(now, moving=False), "hold")
+        w.connected(390.0)
+        now = self.run_silent(w, 390.0, 20.0)                      # 410 s: 간격도 지남
+        self.assertEqual(w.verdict(now, moving=False), "restart")
+
+    def test_disconnected_is_not_judged(self):
+        w = ml.BridgeWatch()
+        self.run_silent(w, 0.0, 30.0)
+        self.assertEqual(w.verdict(30.0, moving=False), "wait")
+
+    def test_reads_rosbridge_escaped_topic(self):
+        # rosbridge 실물 한 줄(11-17 15:03 받음). '/' 가 '\\/' 로 온다.
+        raw = '{"op":"publish","topic":"\\/vica\\/mode_status","msg":{"data":"{}"}}'
+        self.assertTrue(ml.bridge_message_is_ours(raw))
+        self.assertTrue(ml.bridge_message_is_ours('{"op": "publish", "topic": "/vica/mode_status", "msg": {}}'))
+        self.assertFalse(ml.bridge_message_is_ours('{"op":"publish","topic":"\\/robot_status","msg":{}}'))
+        self.assertFalse(ml.bridge_message_is_ours('{"op":"status","msg":"x"}'))
+        self.assertFalse(ml.bridge_message_is_ours("not json"))
+
+
+class MicCheckTest(unittest.TestCase):
+    """마이크 점검(앱 '마이크 점검', 11-19 설계) 시작·정지 거절 규칙과 실행 명령."""
+
+    def _snap(self, base=snapshot, units=None, **overrides):
+        merged = dict(units or {})
+        return base(units=merged, **overrides)
+
+    def _unit(self, name, state):
+        return {name: (state, "running", "success")}
+
+    def test_start_allowed_when_drive_off_and_voice_off(self):
+        # 모드 선택 화면 경로: 주행 꺼짐·음성 꺼짐.
+        self.assertIsNone(ml.mic_check_start_refusal(idle_snapshot(), MANIFEST))
+
+    def test_start_allowed_when_drive_on_but_voice_off_and_still(self):
+        self.assertIsNone(ml.mic_check_start_refusal(snapshot(), MANIFEST))
+
+    def test_start_refuses_when_already_running(self):
+        for state in ("active", "activating", "deactivating"):
+            snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, state))
+            self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "이미 점검 중입니다.")
+
+    def test_detector_on_refused_while_checking_but_off_allowed(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.detector_refusal(snap, MANIFEST, True),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+        self.assertIsNone(ml.detector_refusal(snap, MANIFEST, False))
+        self.assertIsNone(ml.detector_refusal(self._snap(), MANIFEST, True))
+
+    def test_start_refuses_while_mapping(self):
+        snap = idle_snapshot(mapping_state="running")
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "지도를 그리는 중입니다.")
+
+    def test_start_refuses_when_cartographer_process(self):
+        snap = idle_snapshot(procs={"cartographer_no": 1})
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "지도를 그리는 중입니다.")
+
+    def test_start_refuses_when_moving(self):
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(robot_moving=True), MANIFEST), ml.MOVING_REFUSAL)
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(cmd_moving=True), MANIFEST), ml.MOVING_REFUSAL)
+
+    def test_start_refuses_when_voice_unit_up(self):
+        for state in ("active", "activating", "deactivating"):
+            snap = self._snap(units=self._unit("vica-llm.service", state))
+            self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST),
+                             "음성 노드가 켜져 있습니다. 먼저 끄세요.")
+
+    def test_start_refuses_when_voice_from_terminal(self):
+        expect = "터미널에서 띄운 음성이 있습니다. 그 칸을 끈 뒤 다시 누르세요."
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(procs={"vica_llm_node": 1}), MANIFEST), expect)
+        hit = MANIFEST["llm"]["guard_cmdline"]
+        self.assertEqual(ml.mic_check_start_refusal(snapshot(cmdline_hits={hit: 1}), MANIFEST), expect)
+
+    def test_start_order_already_before_mapping(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"), mapping_state="running")
+        self.assertEqual(ml.mic_check_start_refusal(snap, MANIFEST), "이미 점검 중입니다.")
+
+    def test_stop_refusal(self):
+        self.assertEqual(ml.mic_check_stop_refusal(snapshot()), "점검 중이 아닙니다.")
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertIsNone(ml.mic_check_stop_refusal(snap))
+
+    def test_side_stops_detector_only_when_drive_on_and_detector_up(self):
+        for state in ("active", "activating"):
+            snap = self._snap(units=self._unit("vica-detector.service", state))
+            self.assertEqual(ml.mic_check_side_stops(snap, MANIFEST), ["vica-detector.service"])
+        self.assertEqual(ml.mic_check_side_stops(snapshot(), MANIFEST), [])
+        self.assertEqual(ml.mic_check_side_stops(idle_snapshot(), MANIFEST), [])
+
+    def test_command(self):
+        cmd = ml.mic_check_command("/v", "", None)
+        self.assertEqual(cmd[:4], ["systemd-run", "--user", "--collect", f"--unit={ml.MIC_CHECK_UNIT}"])
+        self.assertIn("--setenv=VICA_MIC_CHECK_LAUNCHER=mode", cmd)
+        self.assertIn("--working-directory=/v", cmd)
+        self.assertIn("/v/.venv/bin/python", cmd)
+        self.assertEqual(cmd[cmd.index("--name"):], ["--name", "점검"])
+        self.assertNotIn("--destinations", cmd)
+        with_dest = ml.mic_check_command("/v", "map1", "a,b")
+        self.assertEqual(with_dest[-4:], ["--name", "map1", "--destinations", "a,b"])
+
+    def test_status_has_mic_check(self):
+        self.assertEqual(ml.derive_status(snapshot(), MANIFEST)["mic_check"],
+                         {"state": "inactive", "port": 8770})
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.derive_status(snap, MANIFEST)["mic_check"]["state"], "active")
+
+    def test_drive_start_refused_while_checking(self):
+        snap = idle_snapshot(units=self._unit(ml.MIC_CHECK_UNIT, "active"))
+        self.assertEqual(ml.drive_start_refusal(snap, MANIFEST),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요.")
+
+    def test_map_change_blocked_while_checking(self):
+        snap = self._snap(units=self._unit(ml.MIC_CHECK_UNIT, "deactivating"))
+        self.assertEqual(ml.map_change_block(snap, MANIFEST, "running"),
+                         "마이크 점검 중입니다. 점검을 끝낸 뒤 바꾸세요.")

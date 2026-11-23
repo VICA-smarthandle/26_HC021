@@ -9,16 +9,31 @@
     Nav2 기동 단계             저널(이번 vica-nav2 호출)의 lifecycle_manager_navigation·localization 줄
     safety 상태                /safety_state
     지도 그리기 상태           /vica/mapping_status
-    움직이는 중                /vica/robot_state.is_moving
+    움직이는 중·미션 상태      /vica/robot_state.is_moving · dialog_state
+    주행 지도                  maps/CURRENT_MAP · 유닛 저널의 '[vica-map] <id>' 줄
 """
 from __future__ import annotations
 
+import collections
+import json
+import math
 import re
 from dataclasses import dataclass, field
 
 DRIVE_TARGET = "vica-drive.target"
 NAV2_UNIT = "vica-nav2.service"
 BASE_TARGET = "vica-base.target"
+# 마이크 점검기 유닛(앱 '마이크 점검', 11-19 설계). 모드 노드가 systemd-run 으로 띄운다.
+MIC_CHECK_UNIT = "vica-miccheck.service"
+# 점검기 웹소켓 포트와, 점검기가 '모드 노드가 띄웠다'를 알아보는 환경 변수 이름.
+MIC_CHECK_PORT = 8770
+MIC_CHECK_LAUNCHER_ENV = "VICA_MIC_CHECK_LAUNCHER"
+# 최근 이 시간 안에 /cmd_vel_safe 가 0 이 아니었으면 움직이는 중으로 본다.
+CMD_MOVING_SEC = 1.0
+MOVING_REFUSAL = "로봇이 움직이는 중입니다. 멈춘 뒤 다시 누르세요."
+# 음성 유닛이 켜진 뒤 이 시간 안에는 끄지 않는다(사용자 11-20). 모델을 올리는 동안 노드가 종료 신호를
+# 무시해 TimeoutStopSec(20 s) 뒤 강제 종료 → failed 가 됐다(11-20 실기, 켜고 2 s 만에 끔).
+VOICE_OFF_GRACE_SEC = 60.0
 MAPPING_IDLE = ("idle", "", None)
 # 유닛이 active 가 된 뒤 노드가 다 뜰 때까지의 유예. 2026-11-14 실기에서 미션·감시가 18 s 걸렸다.
 # 그 사이 노드가 없다고 error 로 보이지 않게 한다.
@@ -68,6 +83,14 @@ class Snapshot:
     stopping_sec: float | None = None
     # 앱에서 고른 음성(voice_mode 파일). online(⑫) · offline(⑬ 오프라인 믿음)
     voice_mode: str = "offline"
+    # /vica/robot_state.dialog_state(미션 상태). 미션이 없거나 오래됐으면 None
+    dialog_state: str | None = None
+    # maps/CURRENT_MAP 의 지도 id(다음에 켜는 유닛이 읽는 값). 없으면 ""
+    current_map: str = ""
+    # 지도를 쥐는 유닛(MAP_TRACKED) → 이번 기동이 읽은 지도 id(실행 스크립트의 '[vica-map]' 줄). 모르면 없다.
+    running_maps: dict[str, str] = field(default_factory=dict)
+    # 최근 CMD_MOVING_SEC 안에 /cmd_vel_safe 가 0 이 아니었다. robot_state.is_moving 은 사람 접근·수동 주행·도킹에서 거짓이라 따로 본다.
+    cmd_moving: bool = False
 
 
 def parse_show(text: str) -> tuple[dict, dict[str, str], dict[str, int]]:
@@ -131,6 +154,24 @@ def nav2_phase(lines: list[str], age_sec: float | None = None) -> str:
     return "starting"
 
 
+def settle_nav2_phase(previous: str | None, lines: list[str] | None, age_sec: float | None) -> str:
+    """같은 Nav2 호출에서 저널을 다시 읽은 결과로 단계를 정한다.
+
+    `lines` 가 None 이면 저널을 못 읽은 것(시한 초과·오류)이다. 직전 판정을 그대로 두고, 없으면 starting.
+    이미 waiting_pose·active 를 본 호출은 멈춤(stalled)으로 내려가지 않는다 — 저널이 지워지거나
+    일부만 읽혀 '초기 위치' 줄이 안 보여도 진행은 이미 확인했다. 기동 실패(aborted)는 그대로 우선한다.
+
+    11-17 21:33 사고: 주행 중 flutter 빌드로 저널이 약 10 s 멈춰 조회(5 s 시한)가 실패했고, 빈 목록을
+    판정해 23분째 초기 위치를 기다리던 Nav2 를 '멈춤'으로 보고 자동 재시도로 껐다 켰다.
+    """
+    if lines is None:
+        return previous or "starting"
+    phase = nav2_phase(lines, age_sec)
+    if phase == "stalled" and previous in ("waiting_pose", "active"):
+        return previous
+    return phase
+
+
 def _state(snap: Snapshot, unit: str) -> str:
     return snap.units.get(unit, ("inactive", "dead", ""))[0]
 
@@ -163,6 +204,25 @@ def _duplicated(snap: Snapshot, manifest: dict) -> list[str]:
     return dup
 
 
+# 지도 그리기와 같이 쓰는 이름. 이것만 떠 있으면 '칸에서 띄운 주행 노드'로 보지 않는다.
+MAPPING_SHARED = frozenset({"ekf_node", "encoder_feedbac", "cartographer_no", "cartographer_oc"})
+
+
+def pane_nodes(snap: Snapshot, manifest: dict) -> list[str]:
+    """유닛 밖(칸·터미널)에서 뜬 주행 노드의 감시 이름. 그 주행 유닛이 꺼져(inactive·failed) 있는데 프로세스가 있다.
+
+    사용자 11-18 B안: 앱은 노드 목록(/rosapi/nodes) 대신 이것으로 '칸에서 띄운 Nav2' 를 가린다. 강제 종료된
+    노드는 그 목록에 20 s 남아(FastDDS 수명, 11-18 측정) 주행을 끈 뒤 모드 선택 카드가 30 s 늦게 바뀌었다.
+    내려가는 중(deactivating)인 유닛의 프로세스는 넣지 않는다.
+    """
+    names: set[str] = set()
+    for entry in _bundle(manifest, "drive").values():
+        if _state(snap, entry["unit"]) not in ("inactive", "failed"):
+            continue
+        names.update(n for n in entry.get("guard", ()) if n not in MAPPING_SHARED and snap.procs.get(n, 0))
+    return sorted(names)
+
+
 def _bundle(manifest: dict, bundle: str) -> dict:
     return {k: v for k, v in manifest.items() if v["bundle"] == bundle}
 
@@ -180,6 +240,12 @@ def drive_on(snap: Snapshot, manifest: dict) -> bool:
 
 def derive_status(snap: Snapshot, manifest: dict) -> dict:
     """/vica/mode_status 에 실을 내용."""
+    status = _derive_core(snap, manifest)
+    status.update(map_fields(snap, manifest, status["state"]))
+    return status
+
+
+def _derive_core(snap: Snapshot, manifest: dict) -> dict:
     drive = _bundle(manifest, "drive")
     target = _state(snap, DRIVE_TARGET)
 
@@ -198,6 +264,7 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         "failed_units": failed,
         "missing_nodes": missing,
         "duplicated": _duplicated(snap, manifest),
+        "pane_nodes": pane_nodes(snap, manifest),
         "can_up": snap.can_up,
         # 지난 정지에서 시한을 넘겨 강제 종료된 주행 유닛(systemd Result=timeout). 다시 켜면 지워진다.
         "stop_timeouts": sorted(k for k, e in drive.items()
@@ -207,6 +274,7 @@ def derive_status(snap: Snapshot, manifest: dict) -> dict:
         "detector": _state(snap, manifest["detector"]["unit"]) if "detector" in manifest else "none",
         "voice": _state(snap, manifest["llm"]["unit"]) if "llm" in manifest else "none",
         "voice_mode": snap.voice_mode,
+        "mic_check": {"state": _state(snap, MIC_CHECK_UNIT), "port": MIC_CHECK_PORT},
     }
 
     drive_states = {k: _state(snap, e["unit"]) for k, e in drive.items()}
@@ -268,6 +336,8 @@ def drive_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
     """주행 묶음을 올리면 안 되는 이유. 없으면 None. 이미 떠 있으면 None(같은 요청을 두 번 받아도 된다)."""
     if drive_on(snap, manifest):
         return None
+    if mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
     if snap.mapping_state not in MAPPING_IDLE:
         return f"지도 그리기 중입니다({snap.mapping_state}). 지도 그리기를 끝낸 뒤 주행을 시작합니다."
     for name in ("cartographer_no", "cartographer_oc"):
@@ -287,6 +357,19 @@ def drive_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
         return "두 벌 떠 있는 노드가 있습니다: " + ", ".join(
             "rosbridge" if "rosbridge" in manifest.get(d, {}).get("guard_cmdline", "") else d for d in dup
         )
+    return None
+
+
+def shutdown_refusal(snap: Snapshot) -> str | None:
+    """로봇 끄기(주행·기본 묶음 → sync → 시스템 종료)를 하면 안 되는 이유. 없으면 None.
+
+    앱 '로봇 끄기'(사용자 11-18). 움직이는 중이면 거절한다. 지도 그리기 중이면 저장 안 한 지도를
+    잃으니 거절한다. 움직임을 모르면(None) 막지 않는다 — drive_stop_refusal 과 같다.
+    """
+    if snap.robot_moving:
+        return "주행 중입니다. 멈춘 뒤 끕니다."
+    if snap.mapping_state not in MAPPING_IDLE:
+        return f"지도 그리기 중입니다({snap.mapping_state}). 저장하거나 끝낸 뒤 끕니다."
     return None
 
 
@@ -336,12 +419,14 @@ def read_voice_mode(text: str) -> str:
     return value if value in VOICE_MODES else "offline"
 
 
-def detector_refusal(snap: Snapshot, manifest: dict) -> str | None:
-    """감지기 켜기·끄기를 거절할 이유. 주행 묶음 밖에서는 다루지 않는다."""
+def detector_refusal(snap: Snapshot, manifest: dict, on: bool = False) -> str | None:
+    """감지기 켜기·끄기를 거절할 이유. 주행 묶음 밖에서는 다루지 않는다. 점검 중에는 켜지 못한다(끄기는 허용)."""
     if "detector" not in manifest:
         return "감지기 유닛이 없습니다(--units --stage 2c)."
     if not drive_on(snap, manifest):
         return "주행 모드가 아닙니다."
+    if on and mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
     return None
 
 
@@ -349,6 +434,87 @@ def voice_switch_refusal(snap: Snapshot) -> str | None:
     """음성을 바꾸면 음성 유닛을 다시 띄워 말이 끊긴다. 움직이는 중(안내 중 대화)에는 하지 않는다."""
     if snap.robot_moving:
         return "주행 중입니다. 정지한 뒤 바꿉니다."
+    return None
+
+
+def twist_moving(linear_x: float, angular_z: float) -> bool:
+    """/cmd_vel_safe 한 개가 0 이 아닌가(문턱 1e-3)."""
+    return abs(linear_x) > 1e-3 or abs(angular_z) > 1e-3
+
+
+def robot_in_motion(snap: Snapshot) -> bool:
+    """미션이 움직인다고 하거나, 최근 /cmd_vel_safe 가 0 이 아니었다."""
+    return bool(snap.robot_moving) or snap.cmd_moving
+
+
+def mic_check_active(snap: Snapshot) -> bool:
+    """점검 유닛이 뜨는 중·떠 있는 중·내려가는 중인가(내려가는 중에 칩을 되돌린다)."""
+    return _state(snap, MIC_CHECK_UNIT) in ("active", "activating", "deactivating")
+
+
+def mic_check_start_refusal(snap: Snapshot, manifest: dict) -> str | None:
+    """마이크 점검을 시작하면 안 되는 이유. 없으면 None(주행 꺼짐·음성 꺼짐인 모드 선택 화면도 허용)."""
+    if mic_check_active(snap):
+        return "이미 점검 중입니다."
+    if snap.mapping_state not in MAPPING_IDLE or any(
+            snap.procs.get(name, 0) for name in ("cartographer_no", "cartographer_oc")):
+        return "지도를 그리는 중입니다."
+    if robot_in_motion(snap):
+        return MOVING_REFUSAL
+    llm = manifest.get("llm")
+    if llm:
+        if _state(snap, llm["unit"]) in ("active", "activating", "deactivating"):
+            return "음성 노드가 켜져 있습니다. 먼저 끄세요."
+        pattern = llm.get("guard_cmdline")
+        if (any(snap.procs.get(n, 0) for n in llm.get("guard", ()))
+                or (pattern and snap.cmdline_hits.get(pattern, 0) > 0)):
+            return "터미널에서 띄운 음성이 있습니다. 그 칸을 끈 뒤 다시 누르세요."
+    return None
+
+
+def mic_check_stop_refusal(snap: Snapshot) -> str | None:
+    """점검을 멈추라는 요청을 거절할 이유."""
+    if not mic_check_active(snap):
+        return "점검 중이 아닙니다."
+    return None
+
+
+def mic_check_side_stops(snap: Snapshot, manifest: dict) -> list[str]:
+    """점검을 시작하기 전에 같이 내릴 유닛. 말없이 다가가는 것을 막으려고 주행 중 감지기를 내린다(사용자 11-19 ①)."""
+    det = manifest.get("detector")
+    if det and drive_on(snap, manifest) and _state(snap, det["unit"]) in ("active", "activating"):
+        return [det["unit"]]
+    return []
+
+
+def mic_check_command(voice_root: str, map_id: str, destinations: str | None) -> list[str]:
+    """점검기를 일회성 유닛으로 띄우는 명령. --collect 로 실패한 같은 이름 유닛이 다음 시작을 막지 않게 한다."""
+    cmd = ["systemd-run", "--user", "--collect", f"--unit={MIC_CHECK_UNIT}",
+           f"--setenv={MIC_CHECK_LAUNCHER_ENV}=mode", "--setenv=PYTHONUNBUFFERED=1",
+           f"--working-directory={voice_root}", f"{voice_root}/.venv/bin/python", "-m",
+           "tools.mic_venue_check", "--name", map_id or "점검"]
+    if destinations:
+        cmd += ["--destinations", destinations]
+    return cmd
+
+
+def voice_node_refusal(snap: Snapshot, manifest: dict, on: bool) -> str | None:
+    """음성 노드(vica-llm)만 켜거나 끌 때 거절할 이유.
+
+    순서: 유닛 없음 → 주행 모드 아님 → 움직임 → 점검 중(켤 때만) → 켜진 지 1분 안(끌 때만).
+    켜진 시각을 모르면(unit_age 에 없음) 끄기를 막지 않는다.
+    """
+    if "llm" not in manifest:
+        return "음성 유닛이 없습니다."
+    if not drive_on(snap, manifest):
+        return "주행 모드가 아닙니다."
+    if robot_in_motion(snap):
+        return MOVING_REFUSAL
+    if on and mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 켜세요."
+    age = snap.unit_age.get(manifest["llm"]["unit"])
+    if not on and age is not None and age < VOICE_OFF_GRACE_SEC:
+        return f"음성 노드가 켜지는 중입니다. {math.ceil(VOICE_OFF_GRACE_SEC - age)}초 뒤 다시 누르세요."
     return None
 
 
@@ -361,6 +527,7 @@ class VoiceEventTracker:
       langchain_intent_parser.py   '[LLM] 호출 실패(클라우드만, 폴백 꺼짐)' · '(로컬까지)' · '로컬 백엔드 준비 실패'
       llm_backend.py               '클라우드 실패(… → 로컬(…)로 대피' · '클라우드 건너뛰고 로컬' ·
                                    '인증 실패' · '→ 클라우드 복귀'
+      vica_ollama_preload.sh       '[Ollama] <모델> 올리기 실패' (유닛 실행 스크립트, 11-17)
     성공은 따로 찍히지 않는다. 기동 뒤 실패 줄 없이 '워밍업 완료' 가 오면 성공으로 본다 — 워밍업 호출이
     실패해도 '완료' 는 찍힌다(11-16 17:36 로컬 기동: timed out 뒤 '워밍업 완료 (15.1초)').
     로컬 모드(⑬)는 Ollama 가 주 백엔드라 '클라우드만' 실패도 로컬 실패다.
@@ -405,6 +572,10 @@ class VoiceEventTracker:
             self.failed = True
             detail = line.split(":", 1)[-1] if "LLM 워밍업 실패" in line else line.split("):", 1)[-1]
             return self._event("external_fail" if online else "local_fail", detail)
+        if "[Ollama] " in line and "올리기 실패" in line:
+            # 음성 노드보다 먼저 모델을 올리다 실패(11-17). 첫 질문이 늦거나 실패할 수 있다.
+            self.failed = True
+            return self._event("local_fail", "모델 올리기 실패")
         if "[LLM] 로컬 백엔드 준비 실패" in line:
             return self._event("local_fail", "준비 실패")
         if "Realtime 연결 예열 실패" in line:
@@ -426,3 +597,191 @@ def nav2_restart_refusal(snap: Snapshot) -> str | None:
     if snap.robot_moving:
         return "주행 중입니다."
     return None
+
+
+# ---- 주행 지도 바꾸기(사용자 11-17) ------------------------------------------------
+#
+# 지도는 maps/CURRENT_MAP 한 곳이 정하고, 유닛은 켜질 때 한 번 읽는다(실행 스크립트 MAP_BLOCK).
+# 그래서 파일을 쓰고 지도를 쥔 유닛을 다시 띄운다. 11-17 확인:
+#   nav2     map:= · 같은 이름의 레일(_route.geojson)·금지구역(_keepout.yaml)
+#   mission  map_id:= · ~/vica_data/destinations/<id>/ 목적지·홈·순찰 경로
+#   llm      vica_voice.launch.py map_id:= → vica_llm·tts·wakeword 의 destinations.yaml 경로
+#   posecheck /map 을 다시 받지만 크기·원점이 같으면 옛 거리표를 쓴다(_on_map 의 key) — 같이 다시 띄운다
+# 손잡이·감지기·감시·safety 는 지도를 쓰지 않는다. 런타임 교체(map_server LoadMap)는 미션·음성·레일이
+# 따로 쥔 지도가 어긋나서 쓰지 않는다.
+MAP_TRACKED = ("nav2", "mission", "llm")
+MAP_RESTART = ("nav2", "mission", "llm", "posecheck")
+MAP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_MAP_MARK = re.compile(r"\[vica-map\] (\S+)")
+# 로봇이 멈춰 있고 주행이 끝나 대기 중이거나 일시정지 중일 때만 바꾼다(사용자 11-17).
+# 일시정지한 안내·순찰은 미션을 다시 띄우면 취소된다(목적지·순찰 경로가 지도마다 따로다).
+MAP_CHANGE_OK = ("idle", "arrived", "failed", "paused", "paused_handle", "patrol_paused")
+_DIALOG_LABEL = {
+    "navigating": "안내 중", "confirming": "목적지 확인 중", "estopped": "비상정지 중",
+    "grip_wait": "손잡이 잡기 대기 중", "seeking": "부른 사람 찾는 중",
+    "approaching": "사람 접근 중", "awaiting_user": "사람 접근 중", "turning": "사람 접근 중",
+    "returning": "사람 접근 중",
+    "asking_next": "도착 뒤 안내 중", "asking_wait_time": "도착 뒤 안내 중", "waiting": "도착 뒤 기다리는 중",
+    "waiting_release": "도착 뒤 기다리는 중", "moving_to_wait_spot": "대기 장소로 가는 중",
+    "moving_back_to_dest": "목적지로 돌아가는 중",
+    "patrolling": "순찰 중", "patrol_dwell": "순찰 중", "patrol_alarm": "순찰 경보 중",
+    "patrol_light": "순찰 경보 중",
+}
+
+
+def parse_map_mark(lines: list[str]) -> str:
+    """실행 스크립트가 기동 때 찍는 '[vica-map] <id>' 줄의 마지막 값. 없으면 ""."""
+    found = ""
+    for raw in lines:
+        match = _MAP_MARK.search(_ANSI.sub("", raw))
+        if match:
+            found = match.group(1)
+    return found
+
+
+def map_change_block(snap: Snapshot, manifest: dict, state: str) -> str | None:
+    """지금 로봇 상태 때문에 주행 지도를 바꿀 수 없는 이유. 없으면 None. state 는 derive_status 의 state."""
+    if mic_check_active(snap):
+        return "마이크 점검 중입니다. 점검을 끝낸 뒤 바꾸세요."
+    if snap.mapping_state not in MAPPING_IDLE:
+        return "지도 그리는 중엔 불가"
+    if any(snap.procs.get(name, 0) for name in ("cartographer_no", "cartographer_oc")):
+        return "지도 그리기 노드가 떠 있음"
+    if not drive_on(snap, manifest) and state != "stopping":
+        return None    # 주행이 꺼져 있으면 파일만 바꾼다. 다음에 켤 때 읽는다.
+    if (state in ("starting", "stopping") or snap.stop_pending_sec is not None
+            or snap.nav2_phase == "starting"):
+        return "주행을 켜거나 끄는 중엔 불가"
+    if snap.robot_moving is None or snap.dialog_state is None:
+        return "로봇 상태를 받지 못함 · 주행을 끈 뒤 바꾸세요"
+    if snap.robot_moving:
+        return "로봇이 움직이는 중엔 불가"
+    if snap.dialog_state not in MAP_CHANGE_OK:
+        label = _DIALOG_LABEL.get(snap.dialog_state, f"지금 상태({snap.dialog_state})")
+        return f"{label}엔 불가 · 끝나거나 일시정지하면 가능"
+    return None
+
+
+def map_change_refusal(snap: Snapshot, manifest: dict, state: str, map_id: str,
+                       map_problem: str | None) -> str | None:
+    """이 지도로 바꾸는 요청을 거절할 이유. map_problem 은 노드가 파일을 보고 넘긴다(없으면 None)."""
+    if not MAP_ID_RE.match(map_id or ""):
+        return "지도 이름이 올바르지 않음"
+    if map_id.endswith(("_keepout", "_route")):
+        # maps/ 에는 금지구역 마스크(<id>_keepout.yaml·pgm)도 지도와 같은 꼴로 있다.
+        return "금지구역·레일 파일은 주행 지도가 아님"
+    if map_problem:
+        return map_problem
+    return map_change_block(snap, manifest, state)
+
+
+def map_restart_units(snap: Snapshot, manifest: dict, map_id: str) -> list[str]:
+    """지도를 바꾼 뒤 다시 띄울 유닛. 주행이 꺼져 있거나, 떠 있는 유닛이 이미 그 지도면 없다.
+
+    떠 있지 않은 유닛은 켜질 때 새 파일을 읽는다. failed 인 유닛도 다시 띄운다(새 지도로 살린다).
+    """
+    if not drive_on(snap, manifest):
+        return []
+    live = ("active", "activating", "failed")
+    tracked = [k for k in MAP_TRACKED if k in manifest and _state(snap, manifest[k]["unit"]) in live]
+    if tracked and all(snap.running_maps.get(k) == map_id for k in tracked):
+        return []
+    return [manifest[k]["unit"] for k in MAP_RESTART
+            if k in manifest and _state(snap, manifest[k]["unit"]) in live]
+
+
+def map_fields(snap: Snapshot, manifest: dict, state: str) -> dict:
+    """/vica/mode_status 에 싣는 지도 칸. 어긋남 = 주행 중 유닛이 읽은 지도가 CURRENT_MAP 과 다름."""
+    running = {k: snap.running_maps[k] for k in MAP_TRACKED
+               if k in manifest and _state(snap, manifest[k]["unit"]) == "active"
+               and snap.running_maps.get(k)}
+    mismatch = bool(snap.current_map) and any(v != snap.current_map for v in running.values())
+    return {
+        "current_map_id": snap.current_map,
+        "running_maps": running,
+        "map_mismatch": mismatch,
+        "map_change_block": map_change_block(snap, manifest, state) or "",
+        # 앱이 확인 창을 고른다 — 일시정지 중이면 '남은 안내·순찰 취소'를 알린다(목업 ④-2).
+        "dialog_state": snap.dialog_state or "",
+    }
+
+
+# ---- rosbridge 감시(11-17) ---------------------------------------------------------
+# 2026-11-17 14:39 rosbridge 안의 ROS 처리 스레드(Thread-1 spin)가 rclpy InvalidHandle 로 죽었다.
+# 프로세스·웹소켓은 살아 있어 systemd 는 active, 앱은 '온라인'인데 토픽·서비스가 하나도 안 왔다.
+# 모드 노드가 rosbridge 에 연결 하나를 계속 붙여 두고 자기 /vica/mode_status 가 돌아오는지 본다.
+# 붙었다 끊기를 되풀이하지 않는다 — 그 죽음이 바로 클라이언트가 끊길 때 구독을 지우는 경합이다.
+BRIDGE_APP_UNIT = "vica-app.service"
+# 붙은 채 이만큼 아무것도 안 오면 죽은 것으로 본다. mode_status 는 2초마다(TICK_SEC) — 7번 놓침.
+BRIDGE_SILENT_SEC = 15.0
+# 그 사이 모드 노드 자신이 이만큼은 냈어야 한다(자기가 멈춘 것을 rosbridge 탓으로 돌리지 않게).
+BRIDGE_MIN_OWN_PUBS = 4
+# 재시작 뒤 판정을 쉬는 시간(11-17 실측: 재시작 → 9090 열림 17 s)과 재시작 사이 최소 간격.
+BRIDGE_GRACE_SEC = 60.0
+BRIDGE_COOLDOWN_SEC = 300.0
+
+
+def bridge_message_is_ours(raw) -> bool:
+    """rosbridge 가 보낸 한 줄이 /vica/mode_status 발행인가.
+
+    rosbridge 는 JSON 의 '/' 를 '\\/' 로 적는다("topic":"\\/vica\\/mode_status"). 원문에서 문자열을 찾으면
+    못 찾는다 — 11-17 첫 배포가 그래서 멀쩡한 rosbridge 를 다시 띄웠다. 풀어서 비교한다.
+    """
+    try:
+        msg = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(msg, dict) and msg.get("op") == "publish" and msg.get("topic") == "/vica/mode_status"
+
+
+class BridgeWatch:
+    """rosbridge 가 데이터를 넘기는지 판정한다. 시각은 time.monotonic() 초. 스레드 안전하지 않다 — 호출 쪽이 잠근다.
+
+    verdict(): "ok" | "wait"(판정할 근거가 아직 없음) | "hold"(죽었지만 지금은 재시작하지 않음) | "restart"
+    """
+
+    def __init__(self) -> None:
+        self.connected_at: float | None = None
+        self.last_rx: float | None = None
+        self.own_pubs: collections.deque = collections.deque(maxlen=64)
+        self.restarted_at: float | None = None
+        self.hold_reason = ""
+
+    def connected(self, now: float) -> None:
+        self.connected_at, self.last_rx = now, None
+
+    def disconnected(self) -> None:
+        self.connected_at, self.last_rx = None, None
+
+    def received(self, now: float) -> None:
+        self.last_rx = now
+
+    def published(self, now: float) -> None:
+        self.own_pubs.append(now)
+
+    def restarted(self, now: float) -> None:
+        self.restarted_at = now
+        self.disconnected()
+
+    def silent(self, now: float) -> bool:
+        if self.connected_at is None or now - self.connected_at < BRIDGE_SILENT_SEC:
+            return False
+        if self.last_rx is not None and now - self.last_rx < BRIDGE_SILENT_SEC:
+            return False
+        since = max(self.connected_at, self.last_rx or self.connected_at)
+        return sum(1 for t in self.own_pubs if t >= since) >= BRIDGE_MIN_OWN_PUBS
+
+    def verdict(self, now: float, moving: bool) -> str:
+        if self.restarted_at is not None and now - self.restarted_at < BRIDGE_GRACE_SEC:
+            return "wait"
+        if not self.silent(now):
+            return "ok" if self.last_rx is not None else "wait"
+        if moving:
+            # 주행 중에는 vica-app(목적지·금지구역·경로 노드 포함)을 다시 띄우지 않는다. 멈추면 띄운다.
+            self.hold_reason = "로봇이 움직이는 중"
+            return "hold"
+        if self.restarted_at is not None and now - self.restarted_at < BRIDGE_COOLDOWN_SEC:
+            self.hold_reason = f"직전 재시작 뒤 {BRIDGE_COOLDOWN_SEC:.0f} s 안"
+            return "hold"
+        self.hold_reason = ""
+        return "restart"
