@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
@@ -21,10 +22,28 @@ MONITOR_OVERLAYS = ("$HOME/wt-dev", "$HOME/wt-monitor")
 CPP_MOTOR = ("$HOME/wt-motor-cpp", "mdrobot_can_control_cpp")
 CPP_GUIDANCE = ("$HOME/wt-guidance-cpp", "vica_user_guidance_cpp")
 
+FIX_ENCODER = (
+    "$HOME/wt-encoder-stamp", "encoder_feedback",
+    "lib/python3.10/site-packages/encoder_feedback/encoder_feedback.py", "def pick_dt",
+)
+
 DEFAULT_MAP_ID = "vica_map_0630"
 
 RC_DIR = HOME / ".config" / "vica-terminator"
 TERMINATOR_CONFIG = HOME / ".config" / "terminator" / "config"
+
+SYSTEMD_USER_DIR = HOME / ".config" / "systemd" / "user"
+AUTOSTART_SRC = Path(__file__).resolve().parent / "autostart"
+HELPER_SCRIPTS = (
+    "vica_wait.sh", "vica_container.sh", "vica_ctr_stop.sh",
+    "vica_mode_node.py", "mode_logic.py", "fastdds_udp_only.xml", "fastdds_super_client.xml",
+    "nav2_bond.launch.py", "vica_ollama_preload.sh", "vica_shutdown.sh",
+)
+DISCOVERY_SERVER = "127.0.0.1:11811"
+MANIFEST_NAME = "units.json"
+GENERATED_MARK = "# 자동 생성 파일 — scripts/vica_terminator_layout.py --units"
+
+STAGES = ("1a", "1b", "1c", "2a", "2b", "2c")
 
 AUTO = "auto"
 HOLD = "hold"
@@ -38,6 +57,42 @@ OBSOLETE_LAYOUTS = (
     "vica_map",
     "vicavoice",
 )
+
+
+class Unit:
+    """칸 하나를 터미널 없이 띄우는 systemd 사용자 유닛(`--units`)."""
+
+    def __init__(
+        self,
+        stage: str,
+        bundle: str = "base",
+        command: str = "",
+        restart: str = "on-failure",
+        after: tuple[str, ...] = (),
+        wait: tuple[str, ...] = (),
+        guard: tuple[str, ...] = (),
+        guard_cmdline: str = "",
+        stop_pattern: str = "",
+        stop_sec: int = 20,
+        dds_udp_only: bool = False,
+        discovery_only: bool = False,
+        super_client: bool = False,
+        nice: int | None = None,
+    ) -> None:
+        self.stage = stage
+        self.bundle = bundle
+        self.command = command
+        self.restart = restart
+        self.after = after
+        self.wait = wait
+        self.guard = guard
+        self.guard_cmdline = guard_cmdline
+        self.stop_pattern = stop_pattern
+        self.stop_sec = stop_sec
+        self.dds_udp_only = dds_udp_only
+        self.discovery_only = discovery_only
+        self.super_client = super_client
+        self.nice = nice
 
 
 class Term:
@@ -56,6 +111,8 @@ class Term:
         guard: tuple[str, ...] = (),
         uses_map: bool = False,
         cpp_overlay: tuple[str, str] = (),
+        fix_overlay: tuple[str, str, str, str] = (),
+        unit: Unit | None = None,
     ) -> None:
         self.title = title
         self.note = note
@@ -68,9 +125,31 @@ class Term:
         self.guard = guard
         self.uses_map = uses_map
         self.cpp_overlay = cpp_overlay
+        self.fix_overlay = fix_overlay
+        self.unit = unit
 
 
 VOICE_DUP_CHECK = 'pgrep -f "vica_voice.launch.py|-m src.ros_" >/dev/null && echo "[중복] 음성(⑫ 또는 ⑬)이 이미 켜져 있습니다 — 그 칸을 Ctrl+C 로 끈 뒤 다시 실행하세요." || '
+
+VOICE_MODE_FILE = "$HOME/.config/vica-terminator/voice_mode"
+OLLAMA_SERVE_ENV = (
+    "OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_GO_TEMPLATE=1"
+)
+VOICE_UNIT_COMMAND = (
+    f'VICA_VOICE_MODE=$(cat "{VOICE_MODE_FILE}" 2>/dev/null || echo offline); '
+    "printf '음성: %s\\n' \"$VICA_VOICE_MODE\"; "
+    'if [ "$VICA_VOICE_MODE" = online ]; then '
+    "ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; "
+    "else "
+    "{ curl -sf http://localhost:11434/api/tags >/dev/null || { echo \"[Ollama] 꺼져 있어 켭니다\"; "
+    + OLLAMA_SERVE_ENV
+    + " nohup ollama serve >> $HOME/vica_data/qwen_field/ollama_serve.log 2>&1 & };"
+    ' echo "$("$VICA_BIN/vica_ollama_preload.sh" midm2-mini)";'
+    " VICA_LOCAL_RULES=1 VICA_INTENT_INPUT=text VICA_LLM_PROVIDER=ollama"
+    " OLLAMA_HOST=http://localhost:11434 VICA_LLM_MODEL=midm2-mini OLLAMA_API_KEY="
+    " VICA_LLM_FALLBACK_MODEL= ros2 launch launch/vica_voice.launch.py map_id:=$VICA_MAP_ID; }; "
+    "fi"
+)
 
 
 def build_terms() -> dict[str, Term]:
@@ -118,6 +197,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch vica_description robot_state.launch.py",
             mode=AUTO,
+            unit=Unit(stage="1a"),
                     guard=("robot_state_pub", "joint_state_pub",),
 ),
         "lidar": Term(
@@ -133,6 +213,7 @@ def build_terms() -> dict[str, Term]:
                 " -p flip_x_axis:=true -p scan_mode:=Express"
             ),
             mode=AUTO,
+            unit=Unit(stage="1a", wait=("path /dev/rplidar 60",)),
                     guard=("rplidar_node",),
 ),
         "safety": Term(
@@ -144,6 +225,10 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch vica_safety safety_bringup.launch.py",
             mode=AUTO,
+            unit=Unit(
+                stage="1c", restart="no", wait=("path /sys/class/net/can1 90",),
+                dds_udp_only=True, nice=-10,
+            ),
                     guard=("emergency_stop_", "safety_supervis", "app_emergency_n",),
 ),
         "motor": Term(
@@ -157,6 +242,11 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 launch mdrobot_can_control motor_bringup.launch.py",
             mode=HOLD,
+            unit=Unit(
+                stage="1c", restart="no", after=("safety",),
+                wait=("canup can1 90", "proc safety_supervis 60"),
+                dds_udp_only=True, nice=-10,
+            ),
                     guard=("mdrobot_can_ke", "keyboard_knob",),
             cpp_overlay=CPP_MOTOR,
 ),
@@ -175,6 +265,54 @@ def build_terms() -> dict[str, Term]:
             command="vica_rs",
             mode=HOLD,
             ros=False,
+            unit=Unit(
+                stage="1b",
+                command=(
+                    "docker exec vica_rs_container bash -lc"
+                    " 'cd /workspaces/isaac_ros-dev && ./run_d455_cloud.sh'"
+                ),
+                after=("container",),
+                wait=("container vica_rs_container 120",),
+                guard=("realsense2_came",),
+                stop_pattern=(
+                    "^[^ ]*(python3 [^ ]*ros2 launch realsense2_camera"
+                    "|/realsense2_camera_node )"
+                ),
+                stop_sec=25,
+            ),
+        ),
+        "discovery": Term(
+            title="Discovery Server (자동 기동 전용, --discovery-server)",
+            note=(
+                "노드들이 서로를 직접 찾지 않고 이 서버를 거쳐 찾는다. 주행 묶음을 켤 때 발견",
+                "메시지가 82만~139만 건 버려지고 Nav2 기동이 멈춘 일(2026-11-16) 때문의 시험.",
+            ),
+            command=f"fast-discovery-server -i 0 -l 127.0.0.1 -p {DISCOVERY_SERVER.split(':')[1]}",
+            mode=HOLD,
+            unit=Unit(stage="1a", discovery_only=True, guard=("fast-discovery-",), stop_sec=10),
+        ),
+        "container": Term(
+            title="컨테이너 (자동 기동 전용)",
+            note=(
+                "vica_rs_container 를 터미널 없이 띄우고 살아 있는 동안 붙어 있는다.",
+                "칸 배치에는 없다 — 칸에서는 ⑥ 의 vica_rs 가 같은 컨테이너에 들어간다.",
+            ),
+            command='"$VICA_BIN/vica_container.sh"',
+            mode=HOLD,
+            ros=False,
+            unit=Unit(stage="1b", stop_sec=10),
+        ),
+        "mode": Term(
+            title="모드 노드 (자동 기동 전용)",
+            note=(
+                "앱이 부르는 /vica/mode/drive_start · drive_stop · nav2_restart 로 주행 묶음을",
+                "켜고 끈다. 상태는 /vica/mode_status. 프로세스는 systemd 가 소유한다 —",
+                "이 노드가 죽어도 주행 묶음은 그대로다.",
+            ),
+            command='python3 "$VICA_BIN/vica_mode_node.py"',
+            mode=HOLD,
+            unit=Unit(stage="2b", guard_cmdline=r"^[^ ]*python3 [^ ]*vica_mode_node\.py",
+                      dds_udp_only=True),
         ),
         "imu": Term(
             title="⑦ imu",
@@ -195,6 +333,7 @@ def build_terms() -> dict[str, Term]:
                 " -p target_frame:=base_link"
             ),
             mode=AUTO,
+            unit=Unit(stage="1b"),
                     guard=("imu_base_link_a",),
 ),
         "segnet": Term(
@@ -267,6 +406,9 @@ def build_terms() -> dict[str, Term]:
                 "use_route:=true — 레일(Route Server)로 달린다(2026-10-01 기본). 레일 파일",
                 "<지도>_route.geojson 이 없는 지도는 launch 가 알아서 레일 없이 띄운다.",
                 "레일 없이 비교 주행할 때만 지우고 실행한다.",
+                "",
+                "encoder 는 시각 수리판(~/wt-encoder-stamp, run100 실기)을 덧씌워 띄운다.",
+                "  수리 전 판으로: 칸을 열기 전에 export VICA_FIX_OVERLAY=0",
             ),
             command=(
                 "ros2 launch vica_nav2 nav2_map_test.launch.py"
@@ -275,6 +417,13 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             uses_map=True,
                     guard=("bt_navigator", "planner_server", "controller_serv", "amcl",),
+            fix_overlay=FIX_ENCODER,
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no",
+                command='ros2 launch "$VICA_BIN/nav2_bond.launch.py" map:=$VICA_MAP_YAML use_route:=true',
+                guard=("ekf_node", "encoder_feedbac", "cartographer_no"),
+                stop_sec=30,
+            ),
 ),
         "slam": Term(
             title="slam",
@@ -314,6 +463,9 @@ def build_terms() -> dict[str, Term]:
                 "RViz Fixed Frame 을 map 으로 두고 지도가 자라는 것을 보며 끌고 다닌다.",
                 "회전은 천천히. 그리고 긴 복도는 한 방향으로만 훑지 말고 왕복한다 —",
                 "왔던 자리를 다시 지나야 pose graph 가 쌓인 오차를 당겨 준다.",
+                "",
+                "encoder 는 시각 수리판(~/wt-encoder-stamp, run100 실기)을 덧씌워 띄운다.",
+                "  수리 전 판으로: 칸을 열기 전에 export VICA_FIX_OVERLAY=0",
             ),
             command=(
                 "ros2 launch vica_cartographer vica_slam_bringup.launch.py"
@@ -321,6 +473,7 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
                     guard=("cartographer_no", "cartographer_oc", "ekf_node",
                            "encoder_feedbac",),
+            fix_overlay=FIX_ENCODER,
 ),
         "mission": Term(
             title="⑩ mission",
@@ -339,6 +492,10 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             uses_map=True,
                     guard=("vica_mission_ma",),
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no", after=("nav2",),
+                wait=("proc bt_navigator 90",), guard=("mission_manager",),
+            ),
 ),
         "app": Term(
             title="⑪ app bridge",
@@ -352,6 +509,13 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             uses_map=True,
+            unit=Unit(
+                stage="1a",
+                command=f"ros2 launch {SUPERVISOR}/ros2/supervisor_bringup.launch.py",
+                guard_cmdline="^[^ ]*python3 [^ ]*rosbridge_server/rosbridge_websocket",
+                super_client=True,
+                dds_udp_only=True,
+            ),
                     guard=("rosbridge_webso",),
 ),
         "monitor": Term(
@@ -366,6 +530,7 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             monitor_overlay=True,
                     guard=("robot_health_mo", "external_diagno", "aggregator_node",),
+            unit=Unit(stage="2a", bundle="drive", after=("mission",), super_client=True),
 ),
         "gui": Term(
             title="app GUI",
@@ -398,6 +563,11 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
             workdir=VOICE,
             uses_map=True,
+            unit=Unit(
+                stage="2c", bundle="drive", restart="no", command=VOICE_UNIT_COMMAND,
+                guard_cmdline=r"^[^ ]*python3 [^ ]*ros2 launch launch/vica_voice\.launch\.py",
+                stop_sec=20,
+            ),
                     guard=("vica_llm_node", "vica_tts_node",),
 ),
         "llm_local": Term(
@@ -476,6 +646,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command=f"cd {SUPERVISOR}/build/web && python3 -m http.server 5000",
             mode=HOLD,
+            unit=Unit(stage="1a", guard_cmdline="^[^ ]*python3 -m http.server 5000"),
             ros=False,
             precheck=(
                 f"ls -l {SUPERVISOR}/build/web/index.html 2>&1 | head -1;"
@@ -497,6 +668,9 @@ def build_terms() -> dict[str, Term]:
             command="ros2 run vica_nav2 pose_bootstrap_node",
             mode=HOLD,
                     guard=("pose_bootstrap_",),
+            unit=Unit(
+                stage="2a", bundle="drive", after=("nav2",), wait=("proc amcl 90",),
+            ),
 ),
         "supervisor": Term(
             title="map supervisor",
@@ -509,6 +683,7 @@ def build_terms() -> dict[str, Term]:
             ),
             command="ros2 run vica_cartographer mapping_supervisor_node",
             mode=HOLD,
+            unit=Unit(stage="1a"),
                     guard=("mapping_supervi",),
 ),
         "record": Term(
@@ -560,6 +735,10 @@ def build_terms() -> dict[str, Term]:
             mode=HOLD,
                     guard=("turn_guide_node", "user_guidance_d",),
             cpp_overlay=CPP_GUIDANCE,
+            unit=Unit(
+                stage="2a", bundle="drive", restart="no", after=("nav2",),
+                wait=("proc ekf_node 90",),
+            ),
 ),
         "detector": Term(
             title="⑮ detector",
@@ -577,6 +756,19 @@ def build_terms() -> dict[str, Term]:
             ),
             mode=HOLD,
             ros=False,
+            unit=Unit(
+                stage="2c", bundle="drive",
+                command=(
+                    "docker exec vica_rs_container bash -lc"
+                    " '/workspaces/isaac_ros-dev/vica_detector'"
+                ),
+                wait=("container vica_rs_container 120",),
+                stop_pattern=(
+                    "^(/bin/bash /workspaces/isaac_ros-dev/vica_detector"
+                    "|python3 -m vica_perception\\.person_detector_node)"
+                ),
+                stop_sec=20,
+            ),
                     guard=("vica_detector",),
 ),
         "yolo": Term(
@@ -788,7 +980,7 @@ PROFILES: dict[str, Profile] = {
         columns=[
             ["power", "can", "display", "lidar", "safety"],
             ["motor", "d455", "imu", "reset", "slam", "teleop"],
-            ["supervisor", "app", "rviz", "save", "check", "shell"],
+            ["supervisor", "app", "web", "rviz", "save", "check", "shell"],
         ],
     ),
 }
@@ -934,6 +1126,20 @@ else
 fi
 """
 
+FIX_OVERLAY_BLOCK = """
+if [ "${{VICA_FIX_OVERLAY:-1}}" = "0" ]; then
+  printf '\\033[0;33m[수리판 끔]\\033[0m VICA_FIX_OVERLAY=0 — 본 빌드 {pkg}(수리 전)로 뜬다.\\n'
+elif grep -qs '{marker}' "$VICA_ROS_WS/install/{pkg}/{rel}"; then
+  printf '\\033[0;36m[수리판]\\033[0m 본 빌드 {pkg} 에 이미 들어 있다 — 덧씌우지 않는다.\\n'
+elif [ -f "{ws}/install/local_setup.bash" ] && grep -qs '{marker}' "{ws}/install/{pkg}/{rel}"; then
+  source "{ws}/install/local_setup.bash"
+  printf '\\033[0;36m[수리판]\\033[0m {pkg} <- %s · %s\\n' "{ws}" \\
+    "$(git -C "{ws}" log -1 --format='%h %ad' --date=format:'%m-%d %H:%M' 2>/dev/null)"
+else
+  printf '\\033[0;31m[경고]\\033[0m 수리판 설치본이 없다: %s/install/{pkg} — 본 빌드(수리 전)로 뜬다.\\n' "{ws}"
+fi
+"""
+
 OVERLAY_BLOCK = """
 if ! vica_have_pkg vica_system_monitor; then
   for _ws in "${{VICA_MONITOR_WS:-}}" {candidates}; do
@@ -984,6 +1190,10 @@ fi
 printf '\\n'
 """
 
+UNIT_MAP_MARK = """\
+printf '[vica-map] %s\\n' "$VICA_MAP_ID"
+"""
+
 GUARD_BLOCK = """\
 vica_guard {names} || return 2>/dev/null || exit 0
 """
@@ -994,7 +1204,7 @@ printf '\\033[0;32m실행:\\033[0m %s\\n\\n' {command_q}
 """
 
 HOLD_BLOCK = """\
-history -s {command_q}
+history -s {history_q}
 printf '\\033[0;33m대기 중\\033[0m — 위 화살표(↑) 한 번 + Enter 로 실행합니다:\\n'
 printf '  %s\\n\\n' {command_q}
 """
@@ -1013,8 +1223,8 @@ def rc_name(term_key: str) -> str:
     return f"t_{term_key}"
 
 
-def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
-    """터미널 한 칸의 rc 내용을 만든다."""
+def _env_blocks(term: Term, ros_ws: Path, fallback_map_id: str) -> tuple[str, str, str]:
+    """ROS 환경 · 덧씌움 · 작업 디렉터리 블록. 칸의 rc 와 유닛 실행 스크립트가 같이 쓴다."""
     ros_block = (
         ROS_BLOCK.format(ros_ws=ros_ws, map_id=fallback_map_id) if term.ros else ""
     )
@@ -1029,6 +1239,10 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         ws, pkg = term.cpp_overlay
         overlay_block += CPP_OVERLAY_BLOCK.format(ws=ws, pkg=pkg)
 
+    if term.fix_overlay:
+        ws, pkg, rel, marker = term.fix_overlay
+        overlay_block += FIX_OVERLAY_BLOCK.format(ws=ws, pkg=pkg, rel=rel, marker=marker)
+
     if term.workdir:
         cd_block = (
             f'cd "{term.workdir}" || printf '
@@ -1037,6 +1251,13 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         )
     else:
         cd_block = ""
+
+    return ros_block, overlay_block, cd_block
+
+
+def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
+    """터미널 한 칸의 rc 내용을 만든다."""
+    ros_block, overlay_block, cd_block = _env_blocks(term, ros_ws, fallback_map_id)
 
     note_block = "".join(
         f"printf '\\033[0;37m%s\\033[0m\\n' {shell_quote(line)}\n" for line in term.note
@@ -1059,7 +1280,12 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
     elif term.mode == SHELL:
         run_block = SHELL_BLOCK
     else:
-        run_block = HOLD_BLOCK.format(command_q=shell_quote(term.command))
+        history = term.command
+        if term.guard:
+            history = f"vica_guard {names} && {{ {term.command}; }}"
+        run_block = HOLD_BLOCK.format(
+            history_q=shell_quote(history), command_q=shell_quote(term.command)
+        )
 
     return RC_TEMPLATE.format(
         helper_block=HELPER_BLOCK,
@@ -1072,6 +1298,294 @@ def render_rc(term: Term, ros_ws: Path, fallback_map_id: str) -> str:
         precheck_block=precheck_block + guard_block,
         run_block=run_block,
     )
+
+
+NONINTERACTIVE_ENV_BLOCK = """\
+export PATH="$HOME/.local/bin:/usr/local/cuda-12.6/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/cuda-12.6/lib64:${LD_LIBRARY_PATH:-}"
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+# 화면(X)에 기대지 않는다. 로그인 전에 뜬 유닛과 뒤에 뜬 유닛의 환경이 같아야 한다.
+unset DISPLAY XAUTHORITY WAYLAND_DISPLAY
+"""
+
+RUN_TEMPLATE = """\
+#!/bin/bash
+{mark} 가 다시 만든다. 직접 고치지 말 것.
+# 칸 [{title}] 을 터미널 없이 띄운다 (vica-{key}.service).
+# 끝나는 값: 0 멈추라는 신호를 받음 · 70 스스로 끝남 · 75 이미 떠 있어 거부
+trap 'VICA_STOPPING=1' INT TERM
+VICA_BIN="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)/bin"
+{env_block}{dds_block}{discovery_block}{helper_block}{ros_block}{overlay_block}{cd_block}{map_block}{guard_block}{nice_block}# 준비 중에 정지 신호가 왔으면 명령을 띄우지 않는다(2026-11-16 감시 유닛이 신호를 받고도 launch 를 띄워 SIGKILL).
+[ -n "$VICA_STOPPING" ] && exit 0
+printf '실행: %s\\n' {command_q}
+{command}
+_vica_rc=$?
+[ -n "$VICA_STOPPING" ] && exit 0
+[ "$_vica_rc" = 0 ] && exit 70
+exit "$_vica_rc"
+"""
+
+DDS_UDP_ONLY_BLOCK = """\
+# 공유메모리 없이 UDP 만. 끝난 프로세스의 공유메모리 잠금에 safety 가 멈추지 않게(2026-11-14).
+export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_udp_only.xml"
+"""
+
+NICE_BLOCK = """\
+# 다른 노드보다 CPU 를 먼저 받는다(2026-11-16). 권한이 없으면 경고만 남기고 기본 우선순위로 띄운다.
+if renice -n {nice} -p $$ >/dev/null 2>&1; then printf '우선순위: nice {nice}\\n'; else printf '[경고] nice {nice} 실패 — 기본 우선순위로 띄운다(user@1000 LimitNICE 확인)\\n' >&2; fi
+"""
+
+DISCOVERY_CLIENT_BLOCK = """\
+# Discovery Server 를 거쳐 다른 노드를 찾는다(--discovery-server, 2026-11-16 시험).
+export ROS_DISCOVERY_SERVER="{server}"
+"""
+
+SUPER_CLIENT_BLOCK = """\
+# 전체 노드 목록이 필요하다 — 서버의 모든 정보를 받는 super client.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$VICA_BIN/fastdds_super_client.xml"
+"""
+
+UNIT_GUARD_BLOCK = """\
+vica_guard {names} || exit 75
+"""
+
+UNIT_HELPER_BLOCK = """\
+vica_guard_cmdline() {
+  local _pids
+  _pids=$(pgrep -f -- "$1" 2>/dev/null | grep -vx "$$")
+  if [ -n "$_pids" ]; then
+    printf '[중복] 이미 실행 중입니다 (명령줄 "%s"): pid %s\\n' "$1" "$(echo $_pids)"
+    [ -n "$VICA_FORCE" ] || return 1
+  fi
+  return 0
+}
+"""
+
+UNIT_GUARD_CMDLINE_BLOCK = """\
+vica_guard_cmdline {pattern_q} || exit 75
+"""
+
+TARGET_TITLES = {
+    "base": "기본 묶음 — 부팅 때 자동 기동",
+    "drive": "주행 묶음 — 주행 모드를 고를 때",
+}
+BOOT_BUNDLE = "base"
+
+
+def unit_name(key: str) -> str:
+    return f"vica-{key}.service"
+
+
+def run_name(key: str) -> str:
+    return f"run_{key}.sh"
+
+
+def render_run_script(
+    key: str, term: Term, ros_ws: Path, fallback_map_id: str, discovery: bool = False
+) -> str:
+    """유닛이 실행하는 스크립트. 칸의 rc 와 같은 환경 블록으로 같은 명령을 띄운다."""
+    unit = term.unit
+    ros_block, overlay_block, cd_block = _env_blocks(term, ros_ws, fallback_map_id)
+    command = unit.command or term.command
+    discovery_block = ""
+    if discovery and not unit.discovery_only:
+        discovery_block = DISCOVERY_CLIENT_BLOCK.format(server=DISCOVERY_SERVER)
+        if unit.super_client:
+            discovery_block += SUPER_CLIENT_BLOCK
+        command = command.replace(
+            "docker exec ", f"docker exec -e ROS_DISCOVERY_SERVER={DISCOVERY_SERVER} ")
+
+    names = " ".join(f'"{n}"' for n in (*term.guard, *unit.guard))
+    guard_block = UNIT_GUARD_BLOCK.format(names=names) if names else ""
+    if unit.guard_cmdline:
+        guard_block += UNIT_GUARD_CMDLINE_BLOCK.format(
+            pattern_q=shell_quote(unit.guard_cmdline)
+        )
+
+    return RUN_TEMPLATE.format(
+        mark=GENERATED_MARK,
+        title=term.title,
+        key=key,
+        env_block=NONINTERACTIVE_ENV_BLOCK,
+        dds_block=DDS_UDP_ONLY_BLOCK if unit.dds_udp_only else "",
+        discovery_block=discovery_block,
+        helper_block=HELPER_BLOCK + UNIT_HELPER_BLOCK,
+        ros_block=ros_block,
+        overlay_block=overlay_block,
+        cd_block=cd_block,
+        map_block=MAP_BLOCK + UNIT_MAP_MARK if term.uses_map else "",
+        guard_block=guard_block,
+        nice_block=NICE_BLOCK.format(nice=unit.nice) if unit.nice is not None else "",
+        command_q=shell_quote(command),
+        command=command,
+    )
+
+
+def render_unit(key: str, term: Term, rc_dir: Path, discovery: bool = False) -> str:
+    """systemd 사용자 유닛 파일."""
+    unit = term.unit
+    bin_dir = rc_dir / "bin"
+
+    lines = [
+        f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
+        "[Unit]",
+        f"Description=VICA {term.title}",
+        f"PartOf=vica-{unit.bundle}.target",
+    ]
+    after = [unit_name(k) for k in unit.after]
+    if discovery and not unit.discovery_only:
+        after.append("vica-discovery.service")
+    if unit.bundle != BOOT_BUNDLE:
+        after.insert(0, f"vica-{BOOT_BUNDLE}.target")
+    if after:
+        lines.append("After=" + " ".join(after))
+    lines += ["StartLimitIntervalSec=60", "StartLimitBurst=5", "", "[Service]", "Type=simple"]
+
+    waited = 0
+    for spec in unit.wait:
+        lines.append(f"ExecStartPre={bin_dir}/vica_wait.sh {spec}")
+        waited += int(spec.split()[-1])
+    lines.append(f"TimeoutStartSec={waited + 30}")
+    lines.append(f"ExecStart={rc_dir}/{run_name(key)}")
+
+    if unit.stop_pattern:
+        lines += [
+            "ExecStop=-/bin/kill -INT $MAINPID",
+            f'ExecStop={bin_dir}/vica_ctr_stop.sh "{unit.stop_pattern}" 10',
+            f'ExecStopPost={bin_dir}/vica_ctr_stop.sh "{unit.stop_pattern}" 3',
+        ]
+
+    lines += [
+        "KillMode=control-group",
+        "KillSignal=SIGINT",
+        f"TimeoutStopSec={unit.stop_sec}",
+        f"Restart={unit.restart}",
+        "RestartSec=3",
+        "RestartPreventExitStatus=75",
+        "UnsetEnvironment=DISPLAY XAUTHORITY WAYLAND_DISPLAY",
+        "Environment=PYTHONUNBUFFERED=1",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_target(bundle: str, keys: list[str]) -> str:
+    """묶음 target. 멤버를 Wants 로 당긴다 — 하나가 실패해도 나머지는 뜬다."""
+    lines = [
+        f"{GENERATED_MARK} 가 다시 만든다. 직접 고치지 말 것.",
+        "[Unit]",
+        f"Description=VICA {TARGET_TITLES[bundle]}",
+        "Wants=" + " ".join(unit_name(k) for k in keys),
+    ]
+    if bundle == BOOT_BUNDLE:
+        lines += ["", "[Install]", "WantedBy=default.target"]
+    else:
+        lines += [f"Requires=vica-{BOOT_BUNDLE}.target", f"After=vica-{BOOT_BUNDLE}.target"]
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_manifest(chosen: dict[str, Term]) -> str:
+    """모드 노드가 읽는 유닛 목록(units.json). 유닛마다 살아 있음을 증명하는 프로세스 이름."""
+    entries = {
+        key: {
+            "unit": unit_name(key),
+            "bundle": term.unit.bundle,
+            "guard": [*term.guard, *term.unit.guard],
+            "guard_cmdline": term.unit.guard_cmdline,
+            "restart": term.unit.restart,
+        }
+        for key, term in chosen.items()
+    }
+    return json.dumps(entries, ensure_ascii=False, indent=2) + "\n"
+
+
+def units_upto(terms: dict[str, Term], stage: str, discovery: bool = False) -> dict[str, Term]:
+    """그 단계까지 켜는 유닛."""
+    if stage not in STAGES:
+        raise SystemExit(f"[오류] 모르는 단계 '{stage}'. 쓸 수 있는 단계: {', '.join(STAGES)}")
+    limit = STAGES.index(stage)
+    chosen = {
+        key: term
+        for key, term in terms.items()
+        if term.unit and STAGES.index(term.unit.stage) <= limit
+        and (discovery or not term.unit.discovery_only)
+    }
+    for key, term in chosen.items():
+        for name in term.unit.after:
+            if name not in chosen:
+                raise SystemExit(
+                    f"[오류] 유닛 '{key}' 가 '{name}' 뒤에 뜨도록 돼 있는데,"
+                    f" 단계 {stage} 에는 '{name}' 유닛이 없다."
+                )
+    return chosen
+
+
+def _write_atomic(path: Path, text: str, mode: int = 0o644) -> None:
+    """새 파일을 만들어 바꿔 끼운다."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.chmod(mode)
+    tmp.replace(path)
+
+
+def _is_generated(path: Path) -> bool:
+    try:
+        head = path.read_text(encoding="utf-8").splitlines()[:2]
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(line.startswith(GENERATED_MARK) for line in head)
+
+
+def write_units(
+    terms: dict[str, Term],
+    stage: str,
+    ros_ws: Path,
+    fallback_map_id: str,
+    rc_dir: Path,
+    systemd_dir: Path,
+    discovery: bool = False,
+) -> list[Path]:
+    """실행 스크립트 · 유닛 · target · 도우미 사본을 쓴다."""
+    chosen = units_upto(terms, stage, discovery)
+    bin_dir = rc_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    for name in HELPER_SCRIPTS:
+        dest = bin_dir / name
+        _write_atomic(dest, (AUTOSTART_SRC / name).read_text(encoding="utf-8"), 0o755)
+        written.append(dest)
+
+    for key, term in chosen.items():
+        script = rc_dir / run_name(key)
+        _write_atomic(
+            script, render_run_script(key, term, ros_ws, fallback_map_id, discovery), 0o755)
+        unit_file = systemd_dir / unit_name(key)
+        _write_atomic(unit_file, render_unit(key, term, rc_dir, discovery))
+        written += [script, unit_file]
+
+    for bundle in sorted({term.unit.bundle for term in chosen.values()}):
+        keys = [key for key, term in chosen.items() if term.unit.bundle == bundle]
+        target = systemd_dir / f"vica-{bundle}.target"
+        _write_atomic(target, render_target(bundle, keys))
+        written.append(target)
+
+    manifest = rc_dir / MANIFEST_NAME
+    _write_atomic(manifest, render_manifest(chosen))
+    written.append(manifest)
+
+    stale = [
+        *systemd_dir.glob("vica-*.service"),
+        *systemd_dir.glob("vica-*.target"),
+        *rc_dir.glob("run_*.sh"),
+    ]
+    for path in stale:
+        if path not in written and _is_generated(path):
+            path.unlink()
+
+    return written
 
 
 def check_rc(key: str, term: Term, text: str) -> None:
@@ -1256,7 +1770,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="rc 파일과 config 를 쓰지 않고 무엇을 만들지만 출력한다.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--units",
+        action="store_true",
+        help="칸 대신 systemd 사용자 유닛(자동 기동)을 만든다. rc 와 terminator config 는"
+        " 쓰지 않는다. --stage 가 필요하다.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=STAGES,
+        help="--units 로 켤 단계. 1a 바퀴 무관 · 1b 카메라 쪽 · 1c safety·motor(바퀴).",
+    )
+    parser.add_argument(
+        "--discovery-server",
+        action="store_true",
+        help="--units 와 함께: 노드들이 FastDDS Discovery Server(127.0.0.1:11811)를 거쳐 서로를"
+        " 찾게 한다(2026-11-16 시험). 빼고 다시 만들면 원래대로.",
+    )
+    args = parser.parse_args(argv)
+    if args.units and not args.stage:
+        parser.error(f"--units 에는 --stage 가 필요하다 ({', '.join(STAGES)})")
+    return args
 
 
 def print_profiles(terms: dict[str, Term]) -> None:
@@ -1283,7 +1817,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
 
     for key, term in terms.items():
-        for name in term.guard:
+        for name in (*term.guard, *(term.unit.guard if term.unit else ())):
             if len(name) > 15:
                 print(
                     f"[오류] 칸 '{key}' 의 guard 이름이 15자를 넘는다: '{name}'"
@@ -1296,6 +1830,27 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         print_profiles(terms)
+        return 0
+
+    if args.units:
+        chosen = units_upto(terms, args.stage, args.discovery_server)
+        if args.dry_run:
+            print(f"단계 {args.stage} — 유닛 {len(chosen)}개 예정: {SYSTEMD_USER_DIR}")
+            for key, term in chosen.items():
+                print(f"  {unit_name(key):28s} {term.unit.stage}  Restart={term.unit.restart}")
+            print("(dry-run: 아무것도 쓰지 않았다)")
+            return 0
+        write_units(
+            terms, args.stage, args.ros_ws, args.map_id, RC_DIR, SYSTEMD_USER_DIR,
+            args.discovery_server,
+        )
+        if args.discovery_server:
+            print(f"Discovery Server 사용: {DISCOVERY_SERVER} (빼고 다시 만들면 원래대로)")
+        print(f"단계 {args.stage} — 유닛 {len(chosen)}개: {SYSTEMD_USER_DIR}")
+        print(f"실행 스크립트 · 도우미: {RC_DIR}")
+        print("칸의 rc 와 terminator config 는 건드리지 않았다.")
+        print("적용:  systemctl --user daemon-reload && systemctl --user enable vica-base.target")
+        print("끄기:  systemctl --user disable --now vica-base.target")
         return 0
 
     selected = list(PROFILES) if args.profile == "all" else [args.profile]

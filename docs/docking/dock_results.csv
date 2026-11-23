@@ -1,0 +1,50 @@
+day,run,time,kind,result,x_cm,y_cm,th_deg,attempt,secs,reason
+11-18,run01_standalone,21:41:48,dock,failed,,,,,,no_motion
+11-18,run02_standalone,21:49:16,dock,success,-0.07,-0.65,+2.13,1,16.1,
+11-18,run02_standalone,21:50:14,undock,success,71.2,2.6,179.8,,21.4,
+11-19,run01_mission,09:30:04,undock,success,71.5,2.2,178.2,,21.8,
+11-19,run01_mission,09:30:43,dock,success,-0.04,-0.75,+0.26,1,13.2,
+11-19,run01_mission,09:37:27,undock,success,71.0,1.8,180.5,,30.1,
+11-19,run02_app,09:48:08,dock,failed,,,,,,canceled
+11-19,run02_app,09:48:22,dock,success,-0.02,-0.95,+2.75,1,9.5,
+11-19,run02_app,09:49:11,undock,failed,,,,,,canceled
+11-19,run02_app,09:49:22,dock,success,+0.07,+0.00,-1.83,1,8.2,
+11-19,run02_app,09:50:29,undock,failed,,,,,,estop
+11-19,run03_app,10:19:44,dock,success,-0.16,-0.69,+1.49,1,15.7,
+11-19,run03_app,10:19:57,undock,failed,,,,,,canceled
+11-19,run03_app,10:20:23,dock,success,-0.07,-0.51,-0.70,1,8.4,
+11-19,run03_app,10:20:35,undock,failed,,,,,,canceled
+11-19,run03_app,10:25:35,dock,success,+0.06,+0.02,-2.28,1,7.9,
+11-19,run03_app,10:25:43,undock,failed,,,,,,canceled
+11-19,run04_app,10:49:20,dock,failed,,,,,,canceled
+11-19,run04_app,10:50:03,dock,success,+0.01,-0.85,+1.49,1,9.6,
+11-19,run04_app,10:51:18,undock,failed,,,,,,not_found
+11-19,run04_app,10:57:21,dock,success,+0.02,-0.46,-0.10,1,15.9,
+11-19,run04_app,10:57:29,undock,failed,,,,,,canceled
+11-19,run04_app,10:57:59,undock,failed,,,,,,canceled
+11-19,run04_app,11:00:19,undock,failed,,,,,,canceled
+11-19,run05_app,11:23:58,dock,failed,,,,,,lost
+11-19,run05_app,11:24:32,dock,success,-0.09,-0.83,+2.21,1,18.4,
+11-19,run05_app,11:27:01,undock,success,71.2,2.4,178.6,,22.1,
+11-19,run06_app,11:43:06,dock,success,+0.14,+1.01,-2.36,2,22.5,
+11-19,run06_app,11:43:56,undock,success,70.4,1.8,178.3,,22.0,
+11-19,run07_app,16:20:30,dock,success,-0.00,-0.70,+2.13,1,15.4,
+11-19,run07_app,16:25:29,undock,success,71.4,2.5,178.7,,28.5,
+11-19,run07_app,16:27:34,dock,success,-0.01,-0.65,+1.70,1,13.2,
+11-19,run07_app,16:28:03,undock,success,70.9,2.3,179.8,,22.3,
+11-19,run07_app,16:29:00,dock,success,+0.08,-0.73,+1.50,1,25.4,
+11-19,run07_app,16:29:20,undock,failed,,,,,,canceled
+11-19,run07_app,16:29:39,undock,success,0.0,0.0,176.5,,13.4,
+11-19,run07_app,16:34:38,dock,success,+0.06,-1.02,+3.04,1,23.3,
+11-19,run07_app,16:34:38,refine,v_detect,55.2,,6.7,,,
+11-19,run07_app,16:35:05,undock,success,71.4,2.6,180.3,,21.6,
+11-19,run07_app,16:38:41,dock,success,+0.07,-0.89,+3.00,1,20.4,
+11-19,run07_app,16:38:41,refine,v_detect,48.8,,4.3,,,
+11-19,run07_app,16:39:13,undock,success,71.9,3.0,178.7,,21.9,
+11-19,평소 유닛(17:24),17:29:56,dock,failed,,,,,,out_of_range
+11-19,평소 유닛(17:24),17:29:57,dock,failed,,,,,,out_of_range
+11-19,평소 유닛(17:24),17:30:57,dock,success,+0.05,-0.94,+0.81,1,15.1,
+11-19,평소 유닛(17:24),17:30:57,refine,v_detect,15.7,,12.1,,,
+11-19,평소 유닛(17:24),17:32:45,undock,success,71.7,2.7,178.9,,22.0,
+11-19,평소 유닛(17:24),17:33:34,dock,success,+0.05,-0.72,+2.49,1,17.3,
+11-19,평소 유닛(17:24),17:34:06,undock,success,72.2,2.9,180.0,,21.9,
